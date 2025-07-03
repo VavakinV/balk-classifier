@@ -4,12 +4,15 @@ import numpy as np
 import pandas as pd
 import cv2
 import matplotlib.pyplot as plt
+import random
+import tensorflow as tf
 from dotenv import load_dotenv
 from sklearn.model_selection import train_test_split
 from keras.applications import MobileNetV2
-from keras.layers import GlobalAveragePooling2D, Dense, Dropout
+from keras.layers import GlobalAveragePooling2D, Dense, Dropout, BatchNormalization
 from keras.models import Model
 from keras.optimizers import Adam
+from tensorflow.keras.regularizers import l2
 
 load_dotenv()
 
@@ -111,6 +114,34 @@ def preprocess_image(img, target_size):
     return img
 
 
+def iou_metric(y_true, y_pred):
+    """
+    Метрика IoU для модели Keras.
+    y_true и y_pred - тензоры формы (batch_size, 4) с координатами [x_min, y_min, x_max, y_max]
+    """
+    # Разделяем координаты
+    true_x1, true_y1, true_x2, true_y2 = tf.unstack(y_true, 4, axis=-1)
+    pred_x1, pred_y1, pred_x2, pred_y2 = tf.unstack(y_pred, 4, axis=-1)
+    
+    # Вычисляем координаты пересечения
+    intersect_x1 = tf.maximum(true_x1, pred_x1)
+    intersect_y1 = tf.maximum(true_y1, pred_y1)
+    intersect_x2 = tf.minimum(true_x2, pred_x2)
+    intersect_y2 = tf.minimum(true_y2, pred_y2)
+    
+    # Площадь пересечения
+    intersect_area = tf.maximum(0.0, intersect_x2 - intersect_x1) * tf.maximum(0.0, intersect_y2 - intersect_y1)
+    
+    # Площади каждого прямоугольника
+    true_area = (true_x2 - true_x1) * (true_y2 - true_y1)
+    pred_area = (pred_x2 - pred_x1) * (pred_y2 - pred_y1)
+    
+    # Объединение и IoU
+    union_area = true_area + pred_area - intersect_area
+    iou = intersect_area / (union_area + 1e-07)  # Добавляем epsilon для избежания деления на 0
+    
+    return tf.reduce_mean(iou)  # Среднее IoU по батчу
+
 def create_model(input_shape):
     """Создание модели"""
     base_model = MobileNetV2(
@@ -120,7 +151,6 @@ def create_model(input_shape):
     )
     x = GlobalAveragePooling2D()(base_model.output)
     x = Dense(256, activation='relu')(x)
-    x = Dropout(0.3)(x)
 
     outputs = Dense(4, activation='linear')(x)
     
@@ -128,7 +158,8 @@ def create_model(input_shape):
 
     model.compile(
         optimizer=Adam(learning_rate=0.0001),
-        loss='mse'
+        loss='mse',
+        metrics=[iou_metric]
     )
     return model
 
@@ -250,4 +281,4 @@ if __name__ == "__main__":
             if filename.lower().endswith(('.png', '.jpg', '.jpeg')):
                 test_images.append(os.path.join(dir_path, filename))
 
-    visualize_results(model, test_images, TARGET_SIZE)
+    visualize_results(model, test_images, TARGET_SIZE, 20)
