@@ -22,8 +22,18 @@ TRAIN_IMAGES_PATH = os.getenv("TRAIN_IMAGES_PATH")
 
 def rotated_rect_to_aabb(center_x, center_y, width, height, rotation_degrees):
     """Преобразование rotated rectangle в axis-aligned bounding box (AABB)"""
+    # Проверка на нулевой угол
+    if abs(rotation_degrees) < 1e-6:
+        return (
+            center_x - width/2,
+            center_y - height/2,
+            center_x + width/2,
+            center_y + height/2
+        )
+    
     rotation_rad = np.radians(rotation_degrees)
-    vertices = np.array([
+
+    corners = np.array([
         [-width/2, -height/2],
         [width/2, -height/2],
         [width/2, height/2],
@@ -33,19 +43,28 @@ def rotated_rect_to_aabb(center_x, center_y, width, height, rotation_degrees):
         [np.cos(rotation_rad), -np.sin(rotation_rad)],
         [np.sin(rotation_rad), np.cos(rotation_rad)]
     ])
-    rotated_vertices = np.dot(vertices, rot_mat)
-    rotated_vertices[:, 0] += center_x
-    rotated_vertices[:, 1] += center_y
-    x_min, y_min = np.min(rotated_vertices, axis=0)
-    x_max, y_max = np.max(rotated_vertices, axis=0)
+    rotated_corners = np.dot(corners, rot_mat)
+
+    # Смещение центра
+    offset_x = (width/2 * np.cos(rotation_rad) - height/2 * np.sin(rotation_rad)) - width/2
+    offset_y = (width/2 * np.sin(rotation_rad) + height/2 * np.cos(rotation_rad)) - height/2
+    true_center_x = center_x + offset_x
+    true_center_y = center_y + offset_y
+
+    # Перерасчёт координат углов
+    rotated_corners[:, 0] += true_center_x
+    rotated_corners[:, 1] += true_center_y
+
+    x_min, y_min = np.min(rotated_corners, axis=0)
+    x_max, y_max = np.max(rotated_corners, axis=0)
     return x_min, y_min, x_max, y_max
 
 def parse_annotation(bbox_dict, original_width, original_height):
     """Извлечение координат AABB из аннотации"""
-    cx = bbox_dict['x'] / 100.0 * original_width
-    cy = bbox_dict['y'] / 100.0 * original_height
     width = bbox_dict['width'] / 100.0 * original_width
     height = bbox_dict['height'] / 100.0 * original_height
+    cx = bbox_dict['x'] / 100.0 * original_width + width/2
+    cy = bbox_dict['y'] / 100.0 * original_height + height/2
     rotation = bbox_dict['rotation']
     return rotated_rect_to_aabb(cx, cy, width, height, rotation)
 
@@ -155,53 +174,6 @@ def data_generator(data, batch_size, target_size):
             batch_bboxes.append(bbox_norm)
         yield np.array(batch_imgs), np.array(batch_bboxes)
 
-# Создание и обучение модели
-model = create_model((TARGET_SIZE[1], TARGET_SIZE[0], 3))
-train_gen = data_generator(train_data, BATCH_SIZE, TARGET_SIZE)
-val_gen = data_generator(val_data, BATCH_SIZE, TARGET_SIZE)
-
-history = model.fit(
-    train_gen,
-    steps_per_epoch=len(train_data) // BATCH_SIZE,
-    epochs=EPOCHS,
-    validation_data=val_gen,
-    validation_steps=len(val_data) // BATCH_SIZE
-)
-
-# Оценка на валидации
-val_ious = []
-for sample in val_data:
-    img = cv2.imread(sample['img_path'])
-    img_proc = preprocess_image(img, TARGET_SIZE)
-    pred_bbox_norm = model.predict(np.array([img_proc]))[0]
-    orig_h, orig_w = img.shape[:2]
-    pred_bbox = [
-        pred_bbox_norm[0] * orig_w,
-        pred_bbox_norm[1] * orig_h,
-        pred_bbox_norm[2] * orig_w,
-        pred_bbox_norm[3] * orig_h
-    ]
-    iou = compute_iou(sample['bbox'], pred_bbox)
-    val_ious.append(iou)
-
-print(f"Mean IoU on validation: {np.mean(val_ious):.4f}")
-
-# Тестирование на тестовых данных
-test_dirs = [
-    './dataset/test/altai',
-    './dataset/test/begickaya',
-    './dataset/test/promlit',
-    './dataset/test/ruzhimmash',
-    './dataset/test/tihvin'
-]
-
-test_images = []
-for dir_path in test_dirs:
-    for filename in os.listdir(dir_path):
-        if filename.lower().endswith(('.png', '.jpg', '.jpeg')):
-            test_images.append(os.path.join(dir_path, filename))
-
-
 def visualize_results(model, test_images, target_size, n=5):
     """Визуализация с корректным преобразованием координат"""
     for img_path in test_images[:n]:
@@ -231,4 +203,51 @@ def visualize_results(model, test_images, target_size, n=5):
         plt.title(os.path.basename(img_path))
         plt.show()
 
-visualize_results(model, test_images, TARGET_SIZE)
+if __name__ == "__main__":
+    # Создание и обучение модели
+    model = create_model((TARGET_SIZE[1], TARGET_SIZE[0], 3))
+    train_gen = data_generator(train_data, BATCH_SIZE, TARGET_SIZE)
+    val_gen = data_generator(val_data, BATCH_SIZE, TARGET_SIZE)
+
+    history = model.fit(
+        train_gen,
+        steps_per_epoch=len(train_data) // BATCH_SIZE,
+        epochs=EPOCHS,
+        validation_data=val_gen,
+        validation_steps=len(val_data) // BATCH_SIZE
+    )
+
+    # Оценка на валидации
+    val_ious = []
+    for sample in val_data:
+        img = cv2.imread(sample['img_path'])
+        img_proc = preprocess_image(img, TARGET_SIZE)
+        pred_bbox_norm = model.predict(np.array([img_proc]))[0]
+        orig_h, orig_w = img.shape[:2]
+        pred_bbox = [
+            pred_bbox_norm[0] * orig_w,
+            pred_bbox_norm[1] * orig_h,
+            pred_bbox_norm[2] * orig_w,
+            pred_bbox_norm[3] * orig_h
+        ]
+        iou = compute_iou(sample['bbox'], pred_bbox)
+        val_ious.append(iou)
+
+    print(f"Mean IoU on validation: {np.mean(val_ious):.4f}")
+
+    # Тестирование на тестовых данных
+    test_dirs = [
+        './dataset/test/altai',
+        './dataset/test/begickaya',
+        './dataset/test/promlit',
+        './dataset/test/ruzhimmash',
+        './dataset/test/tihvin'
+    ]
+
+    test_images = []
+    for dir_path in test_dirs:
+        for filename in os.listdir(dir_path):
+            if filename.lower().endswith(('.png', '.jpg', '.jpeg')):
+                test_images.append(os.path.join(dir_path, filename))
+
+    visualize_results(model, test_images, TARGET_SIZE)
