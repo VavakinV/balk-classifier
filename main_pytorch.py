@@ -16,7 +16,7 @@ load_dotenv()
 
 TARGET_SIZE = (320, 320)
 BATCH_SIZE = 32
-EPOCHS = 20
+EPOCHS = 50
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 ANNOTATIONS_PATH = os.getenv("ANNOTATIONS_PATH")
@@ -270,7 +270,7 @@ if __name__ == "__main__":
     train_dataset = BBoxDataset(train_data, TARGET_SIZE)
     val_dataset = BBoxDataset(val_data, TARGET_SIZE)
     
-    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
+    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE*2, shuffle=True, num_workers=4, pin_memory=True, persistent_workers=True)
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE)
     
     # Инициализация модели
@@ -284,7 +284,7 @@ if __name__ == "__main__":
         train_loss, train_iou = train_epoch(model, train_loader, optimizer, criterion)
         val_loss, val_iou = validate(model, val_loader, criterion)
         
-        print(f"Epoch {epoch+1}/{EPOCHS}")
+        print(f"\nEpoch {epoch+1}/{EPOCHS}")
         print(f"Train Loss: {train_loss:.4f} | Train IoU: {train_iou:.4f}")
         print(f"Val Loss: {val_loss:.4f} | Val IoU: {val_iou:.4f}")
         
@@ -292,9 +292,10 @@ if __name__ == "__main__":
         if val_iou > best_iou:
             best_iou = val_iou
             torch.save(model.state_dict(), 'best_model.pth')
+            print(f"Модель сохранена (лучший IoU: {best_iou:.4f})")
     
     # Загрузка лучшей модели
-    model.load_state_dict(torch.load('best_model.pth'))
+    model.load_state_dict(torch.load('best_model.pth', map_location=DEVICE))
     
     # Тестирование на нескольких примерах
     test_dirs = [
@@ -311,4 +312,4 @@ if __name__ == "__main__":
             if filename.lower().endswith(('.png', '.jpg', '.jpeg')):
                 test_images.append(os.path.join(dir_path, filename))
 
-    visualize_predictions(model, test_images, TARGET_SIZE, n=20)
+    visualize_predictions(model, test_images, TARGET_SIZE, DEVICE, n=20)
