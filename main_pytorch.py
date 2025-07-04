@@ -215,9 +215,9 @@ def train_model():
     model = BBoxModel().to(DEVICE)
     criterion = CombinedLoss(alpha=0.7)
     optimizer = optim.Adam(model.parameters(), lr=0.001)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=3)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.2, patience=5)
 
-    best_val_loss = float('inf')
+    best_val_iou = 0.0
     history = {'train_loss': [], 'val_loss': [], 'train_iou': [], 'val_iou': []}
     
     for epoch in range(EPOCHS):
@@ -275,8 +275,8 @@ def train_model():
                 f"Val Loss: {val_loss:.4f} | Val IoU: {val_iou:.4f} | "
                 f"LR: {current_lr:.6f}")
         
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
+        if val_loss > best_val_iou:
+            best_val_iou = val_loss
             torch.save(model.state_dict(), "best_model.pth")
             print("Model saved!")
     
