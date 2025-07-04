@@ -358,7 +358,7 @@ def visualize_predictions(model, test_images, target_size, device, n=5):
             # Получение предсказания
             with torch.no_grad():
                 pred = model(img_tensor)
-                pred_np = pred.cpu().numpy()
+                pred_np = pred.cpu().numpy().squeeze()
             
             # Проверка формы выходных данных
             print(f"Debug - pred_np shape: {pred_np.shape}")  # Отладочная информация
@@ -373,15 +373,18 @@ def visualize_predictions(model, test_images, target_size, device, n=5):
             
             # Преобразование координат
             try:
-                x_min = max(0, int(pred_bbox[0] * orig_w))
-                y_min = max(0, int(pred_bbox[1] * orig_h))
-                x_max = min(orig_w, int(pred_bbox[2] * orig_w))
-                y_max = min(orig_h, int(pred_bbox[3] * orig_h))
-            except IndexError:
-                print(f"Error: Prediction has wrong format for image {img_path}")
+                x_min = int(pred_np[0] * orig_w)
+                y_min = int(pred_np[1] * orig_h)
+                x_max = int(pred_np[2] * orig_w)
+                y_max = int(pred_np[3] * orig_h)
+            except Exception as e:
+                print(f"Error converting coordinates for image {img_path}: {str(e)}")
                 continue
             
             # Проверка валидности bounding box
+            x_min, y_min = max(0, x_min), max(0, y_min)
+            x_max, y_max = min(orig_w, x_max), min(orig_h, y_max)
+
             if x_min >= x_max or y_min >= y_max:
                 print(f"Warning: Invalid bbox coordinates for image {img_path}")
                 continue
