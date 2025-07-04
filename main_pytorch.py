@@ -10,7 +10,6 @@ from dotenv import load_dotenv
 from sklearn.model_selection import train_test_split
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import torch.optim as optim
 from torchvision import models, transforms
 from torch.utils.data import Dataset, DataLoader
@@ -182,74 +181,30 @@ class SpatialAttention(nn.Module):
         combined = torch.cat([avg_out, max_out], dim=1)
         att_map = self.conv(combined)
         return x * self.sigmoid(att_map)
-    
-class FPN(nn.Module):
-    def __init__(self, in_channels_list, out_channels):
-        super(FPN, self).__init__()
-        self.lateral_convs = nn.ModuleList()
-        self.output_convs = nn.ModuleList()
-        
-        for in_channels in in_channels_list:
-            self.lateral_convs.append(
-                nn.Conv2d(in_channels, out_channels, kernel_size=1)
-            )
-            self.output_convs.append(
-                nn.Sequential(
-                    nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1),
-                    nn.ReLU()
-                )
-            )
-        
-    def forward(self, features):
-        pyramid_features = []
-        last_feature = None
-        
-        for idx, feature in enumerate(reversed(features)):
-            lateral = self.lateral_convs[len(features)-1-idx](feature)
-            
-            if last_feature is not None:
-                size = lateral.shape[-2:]
-                upsampled = F.interpolate(last_feature, size=size, mode='nearest')
-                lateral = lateral + upsampled
-            
-            output = self.output_convs[len(features)-1-idx](lateral)
-            pyramid_features.append(output)
-            last_feature = output
-        
-        return list(reversed(pyramid_features))
 
 class BBoxModel(nn.Module):
     def __init__(self, input_size=TARGET_SIZE, num_classes=1):
         super(BBoxModel, self).__init__()
         resnet = models.resnet18(pretrained=True)
-        # Извлекаем промежуточные слои для FPN
-        self.conv1 = nn.Sequential(resnet.conv1, resnet.bn1, resnet.relu)
-        self.maxpool = resnet.maxpool
-        self.layer1 = resnet.layer1  # Разрешение: 80x80 (для 320x320)
-        self.layer2 = resnet.layer2  # Разрешение: 40x40
-        self.layer3 = resnet.layer3  # Разрешение: 20x20
-        
-        # Инициализация FPN
-        self.fpn = FPN(
-            in_channels_list=[64, 128, 256],  # Каналы layer1, layer2, layer3
-            out_channels=256
+        self.layer0 = nn.Sequential(
+            resnet.conv1,
+            resnet.bn1,
+            resnet.relu
         )
-        
-        # Блоки пространственного внимания для каждого уровня FPN
-        self.attentions = nn.ModuleList([
-            SpatialAttention(kernel_size=7),
-            SpatialAttention(kernel_size=5),
-            SpatialAttention(kernel_size=3)
-        ])
-        
-        # Объединяем признаки разных уровней
-        self.fusion_conv = nn.Sequential(
-            nn.Conv2d(256*3, 256, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.AdaptiveAvgPool2d((4, 4))
+        self.layer1 = nn.Sequential(
+            resnet.maxpool,
+            resnet.layer1
         )
+        self.layer2 = resnet.layer2
+        self.layer3 = resnet.layer3
+        
+        # Добавляем блоки пространственного внимания
+        self.att1 = SpatialAttention(kernel_size=7)
+        self.att2 = SpatialAttention(kernel_size=5)
+        
+        # Адаптивный пулинг для сохранения пространственной информации
+        self.adaptive_pool = nn.AdaptiveAvgPool2d((4, 4))
 
-        # Регрессор
         self.regressor = nn.Sequential(
             nn.Linear(256*4*4, 512),
             nn.ReLU(),
@@ -261,39 +216,21 @@ class BBoxModel(nn.Module):
         )
 
     def forward(self, x):
-        # Проход через начальные слои
-        x = self.conv1(x)
-        x = self.maxpool(x)
+        x = self.layer0(x)
+        x = self.layer1(x)
+        x = self.layer2(x)
         
-        # Извлекаем признаки разных уровней
-        f1 = self.layer1(x)   # 64 каналов, 80x80
-        f2 = self.layer2(f1)  # 128 каналов, 40x40
-        f3 = self.layer3(f2)  # 256 каналов, 20x20
+        # Первый блок внимания
+        x = self.att1(x)
+        x = self.layer3(x)
         
-        # Строим FPN
-        features = [f1, f2, f3]
-        pyramid_features = self.fpn(features)
+        # Второй блок внимания
+        x = self.att2(x)
         
-        # Применяем пространственное внимание к каждому уровню
-        attended_features = []
-        for feat, att in zip(pyramid_features, self.attentions):
-            attended_features.append(att(feat))
-        
-        # Апсемплируем все признаки до максимального размера
-        target_size = attended_features[0].shape[-2:]
-        upsampled_features = []
-        
-        for feat in attended_features:
-            if feat.size()[-2:] != target_size:
-                feat = F.interpolate(feat, size=target_size, mode='bilinear', align_corners=True)
-            upsampled_features.append(feat)
-        
-        # Объединяем признаки
-        fused = torch.cat(upsampled_features, dim=1)
-        fused = self.fusion_conv(fused)
-        
-        # Регрессор
-        x = fused.view(fused.size(0), -1)
+        # Пулинг и выравнивание
+        x = self.adaptive_pool(x)
+        x = x.view(x.size(0), -1)
+
         return self.regressor(x)
     
 def calculate_iou(pred_boxes, true_boxes):
