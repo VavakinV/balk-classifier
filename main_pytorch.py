@@ -19,7 +19,7 @@ load_dotenv()
 
 TARGET_SIZE = (320, 320)
 BATCH_SIZE = 32
-EPOCHS = 20
+EPOCHS = 25
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 ANNOTATIONS_PATH = os.getenv("ANNOTATIONS_PATH")
@@ -189,9 +189,10 @@ def train_model():
     model = BBoxModel().to(DEVICE)
     criterion = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=0.001)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=3, verbose=True)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=3)
 
     best_val_loss = float('inf')
+    history = {'train_loss': [], 'val_loss': [], 'train_iou': [], 'val_iou': []}
     
     for epoch in range(EPOCHS):
         model.train()
@@ -214,6 +215,8 @@ def train_model():
         
         train_loss /= len(train_loader.dataset)
         train_iou /= len(train_loader.dataset)
+        history['train_loss'].append(train_loss)
+        history['train_iou'].append(train_iou)
         
         # Валидация
         model.eval()
@@ -233,16 +236,40 @@ def train_model():
         
         val_loss /= len(val_loader.dataset)
         val_iou /= len(val_loader.dataset)
+        history['val_loss'].append(val_loss)
+        history['val_iou'].append(val_iou)
+        
         scheduler.step(val_loss)
         
+        # Вывод информации о текущем learning rate
+        current_lr = optimizer.param_groups[0]['lr']
+        
         print(f"Epoch {epoch+1}/{EPOCHS} | "
-              f"Train Loss: {train_loss:.4f} | Train IoU: {train_iou:.4f} | "
-              f"Val Loss: {val_loss:.4f} | Val IoU: {val_iou:.4f}")
+                f"Train Loss: {train_loss:.4f} | Train IoU: {train_iou:.4f} | "
+                f"Val Loss: {val_loss:.4f} | Val IoU: {val_iou:.4f} | "
+                f"LR: {current_lr:.6f}")
         
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             torch.save(model.state_dict(), "best_model.pth")
             print("Model saved!")
+    
+    # Построение графиков обучения
+    plt.figure(figsize=(12, 5))
+    plt.subplot(1, 2, 1)
+    plt.plot(history['train_loss'], label='Train Loss')
+    plt.plot(history['val_loss'], label='Val Loss')
+    plt.title('Loss during training')
+    plt.legend()
+    
+    plt.subplot(1, 2, 2)
+    plt.plot(history['train_iou'], label='Train IoU')
+    plt.plot(history['val_iou'], label='Val IoU')
+    plt.title('IoU during training')
+    plt.legend()
+    
+    plt.savefig('training_history.png')
+    plt.show()
     
     # Загрузка лучшей модели
     model.load_state_dict(torch.load("best_model.pth"))
@@ -251,35 +278,62 @@ def train_model():
 def visualize_predictions(model, test_images, target_size, device, n=5):
     model.eval()
     for img_path in test_images[:n]:
-        img = cv2.imread(img_path)
-        if img is None:
-            continue
+        try:
+            # Загрузка изображения
+            img = cv2.imread(img_path)
+            if img is None:
+                print(f"Warning: Could not read image {img_path}")
+                continue
+                
+            orig_h, orig_w = img.shape[:2]
+            display_img = img.copy()
             
-        orig_h, orig_w = img.shape[:2]
-        display_img = img.copy()
-        
-        img_proc = preprocess_image(img, target_size)
-        img_tensor = torch.FloatTensor(img_proc.transpose(2, 0, 1)).unsqueeze(0).to(device)
-        
-        with torch.no_grad():
-            pred_bbox_norm = model(img_tensor).cpu().numpy()[0]
-        
-        # Конвертация в абсолютные координаты
-        x_min = int(pred_bbox_norm[0] * orig_w)
-        y_min = int(pred_bbox_norm[1] * orig_h)
-        x_max = int(pred_bbox_norm[2] * orig_w)
-        y_max = int(pred_bbox_norm[3] * orig_h)
-        
-        # Отрисовка прямоугольника
-        cv2.rectangle(display_img, (x_min, y_min), (x_max, y_max), (0, 255, 0), 3)
-        
-        # Сохранение и отображение
-        plt.figure(figsize=(12, 8))
-        plt.imshow(cv2.cvtColor(display_img, cv2.COLOR_BGR2RGB))
-        plt.axis('off')
-        plt.title(os.path.basename(img_path))
-        plt.savefig(f"result_{os.path.basename(img_path)}", bbox_inches='tight')
-        plt.show()
+            # Предобработка изображения
+            img_proc = preprocess_image(img, target_size)
+            img_tensor = torch.FloatTensor(img_proc.transpose(2, 0, 1)).unsqueeze(0).to(device)
+            
+            # Получение предсказания
+            with torch.no_grad():
+                pred = model(img_tensor)
+                pred_np = pred.cpu().numpy()
+            
+            # Проверка формы выходных данных
+            print(f"Debug - pred_np shape: {pred_np.shape}")  # Отладочная информация
+            
+            if pred_np.size == 4:  # Если это плоский массив из 4 элементов
+                pred_bbox = pred_np
+            elif pred_np.shape[-1] == 4:  # Если это массив с последней размерностью 4
+                pred_bbox = pred_np[0] if len(pred_np.shape) > 1 else pred_np
+            else:
+                print(f"Error: Unexpected prediction shape {pred_np.shape} for image {img_path}")
+                continue
+            
+            # Преобразование координат
+            try:
+                x_min = max(0, int(pred_bbox[0] * orig_w))
+                y_min = max(0, int(pred_bbox[1] * orig_h))
+                x_max = min(orig_w, int(pred_bbox[2] * orig_w))
+                y_max = min(orig_h, int(pred_bbox[3] * orig_h))
+            except IndexError:
+                print(f"Error: Prediction has wrong format for image {img_path}")
+                continue
+            
+            # Проверка валидности bounding box
+            if x_min >= x_max or y_min >= y_max:
+                print(f"Warning: Invalid bbox coordinates for image {img_path}")
+                continue
+            
+            # Отрисовка и отображение
+            cv2.rectangle(display_img, (x_min, y_min), (x_max, y_max), (0, 255, 0), 3)
+            
+            plt.figure(figsize=(12, 8))
+            plt.imshow(cv2.cvtColor(display_img, cv2.COLOR_BGR2RGB))
+            plt.axis('off')
+            plt.title(os.path.basename(img_path))
+            plt.show()
+            
+        except Exception as e:
+            print(f"Error processing image {img_path}: {str(e)}")
 
 def collect_test_images(test_dirs):
     test_images = []
