@@ -20,7 +20,7 @@ load_dotenv()
 
 TARGET_SIZE = (320, 320)
 BATCH_SIZE = 32
-EPOCHS = 40
+EPOCHS = 45
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 ANNOTATIONS_PATH = os.getenv("ANNOTATIONS_PATH")
@@ -169,40 +169,46 @@ class BBoxDataset(Dataset):
             torch.FloatTensor(bbox_norm) # Координаты AABB в формате [x_min, y_min, x_max, y_max]
         )
 
-class IoULoss(nn.Module):
-    def __init__(self, reduction='mean'):
-        super(IoULoss, self).__init__()
-        self.reduction = reduction
+class CombinedLoss(nn.Module):
+    def __init__(self, alpha=0.7):
+        super(CombinedLoss, self).__init__()
+        self.alpha = alpha
+        self.mse = nn.MSELoss()
         
     def forward(self, pred, target):
-        # Обеспечиваем валидные значения
+        # MSE компонент
+        mse_loss = self.mse(pred, target)
+        
+        # IoU компонент с улучшенной стабильностью
         pred = torch.clamp(pred, 0, 1)
         target = torch.clamp(target, 0, 1)
         
-        # Вычисляем площади пересечения
+        # Координаты пересечения
         inter_xmin = torch.max(pred[:, 0], target[:, 0])
         inter_ymin = torch.max(pred[:, 1], target[:, 1])
         inter_xmax = torch.min(pred[:, 2], target[:, 2])
         inter_ymax = torch.min(pred[:, 3], target[:, 3])
         
-        inter_area = torch.clamp(inter_xmax - inter_xmin, min=0) * torch.clamp(inter_ymax - inter_ymin, min=0)
+        # Площадь пересечения
+        inter_width = torch.clamp(inter_xmax - inter_xmin, min=0)
+        inter_height = torch.clamp(inter_ymax - inter_ymin, min=0)
+        inter_area = inter_width * inter_height
         
-        # Вычисляем площади объединения
+        # Площади прямоугольников
         pred_area = (pred[:, 2] - pred[:, 0]) * (pred[:, 3] - pred[:, 1])
         target_area = (target[:, 2] - target[:, 0]) * (target[:, 3] - target[:, 1])
-        union_area = pred_area + target_area - inter_area
         
-        # Вычисляем IoU
-        iou = inter_area / (union_area + 1e-6)
+        # Объединение
+        union_area = pred_area + target_area - inter_area + 1e-6
         
-        # Возвращаем 1 - IoU как loss
-        loss = 1.0 - iou
+        # IoU
+        iou = inter_area / union_area
         
-        if self.reduction == 'mean':
-            return loss.mean()
-        elif self.reduction == 'sum':
-            return loss.sum()
-        return loss
+        # Стабильная версия IoU loss
+        iou_loss = -torch.log(iou + 1e-6) 
+        
+        # Комбинированная потеря
+        return self.alpha * mse_loss + (1 - self.alpha) * iou_loss.mean()
 
 class BBoxModel(nn.Module):
     def __init__(self, input_size=TARGET_SIZE, num_classes=1):
@@ -240,8 +246,8 @@ def train_model():
     
     # Инициализация модели
     model = BBoxModel().to(DEVICE)
-    criterion = IoULoss()
-    optimizer = optim.AdamW(model.parameters(), lr=0.001, weight_decay=1e-4)
+    criterion = CombinedLoss(alpha=0.7)
+    optimizer = optim.Adam(model.parameters(), lr=0.001)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=3)
 
     best_val_loss = float('inf')
@@ -403,4 +409,4 @@ if __name__ == "__main__":
     print(f"Found {len(test_images)} test images")
     
     # Визуализация результатов
-    visualize_predictions(trained_model, test_images, TARGET_SIZE, DEVICE, n=10)
+    visualize_predictions(trained_model, test_images, TARGET_SIZE, DEVICE, n=20)
