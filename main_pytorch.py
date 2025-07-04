@@ -20,7 +20,7 @@ load_dotenv()
 
 TARGET_SIZE = (320, 320)
 BATCH_SIZE = 32
-EPOCHS = 25
+EPOCHS = 40
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 ANNOTATIONS_PATH = os.getenv("ANNOTATIONS_PATH")
