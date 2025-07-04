@@ -128,13 +128,6 @@ class BBoxDataset(Dataset):
         self.data = data
         self.target_size = target_size
         self.augment = augment
-        self.transform = transforms.Compose([
-            transforms.ToPILImage(),
-            transforms.RandomHorizontalFlip(p=0.5),
-            transforms.RandomRotation(10),
-            transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
-            transforms.ToTensor()
-        ])
 
     def __len__(self):
         return len(self.data)
@@ -148,38 +141,18 @@ class BBoxDataset(Dataset):
         orig_w, orig_h = sample['orig_width'], sample['orig_height']
         
         if self.augment:
-            # Случайное масштабирование
-            scale = random.uniform(0.8, 1.2)
-            new_w, new_h = int(orig_w * scale), int(orig_h * scale)
-            img = cv2.resize(img, (new_w, new_h))
-            
-            # Случайный сдвиг
-            dx = random.randint(-int(orig_w*0.1), int(orig_w*0.1))
-            dy = random.randint(-int(orig_h*0.1), int(orig_h*0.1))
-            
-            # Применяем трансформации к bbox
-            bbox = [
-                max(0, min(orig_w, bbox[0] * scale + dx)),
-                max(0, min(orig_h, bbox[1] * scale + dy)),
-                max(0, min(orig_w, bbox[2] * scale + dx)),
-                max(0, min(orig_h, bbox[3] * scale + dy))
-            ]
-            
-            # Случайное кадрирование
             if random.random() > 0.5:
-                crop_size = random.randint(int(min(new_w, new_h)*0.7), min(new_w, new_h))
-                x = random.randint(0, new_w - crop_size)
-                y = random.randint(0, new_h - crop_size)
-                img = img[y:y+crop_size, x:x+crop_size]
+                img = cv2.flip(img, 1)
                 bbox = [
-                    max(0, bbox[0] - x),
-                    max(0, bbox[1] - y),
-                    min(crop_size, bbox[2] - x),
-                    min(crop_size, bbox[3] - y)
+                    orig_w - bbox[2],
+                    bbox[1],
+                    orig_w - bbox[0],
+                    bbox[3]
                 ]
-                new_w, new_h = crop_size, crop_size
-
-            orig_w, orig_h = new_w, new_h
+            
+            alpha = random.uniform(0.8, 1.2)
+            beta = random.uniform(-30, 30)
+            img = cv2.convertScaleAbs(img, aplha=alpha, beta=beta)
 
         img = preprocess_image(img, self.target_size)
 
@@ -190,14 +163,9 @@ class BBoxDataset(Dataset):
             bbox[2] / orig_w,
             bbox[3] / orig_h
         ]
-
-        if self.augment:
-            img = self.transform(img)
-        else:
-            img = torch.FloatTensor(img.transpose(2, 0, 1))
         
         return (
-            img, # Исходное изображение в формате (channels, height, width)
+            torch.FloatTensor(img.transpose(2, 0, 1)), # Исходное изображение в формате (channels, height, width)
             torch.FloatTensor(bbox_norm) # Координаты AABB в формате [x_min, y_min, x_max, y_max]
         )
 
