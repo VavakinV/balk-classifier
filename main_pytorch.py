@@ -12,7 +12,7 @@ import torch.nn as nn
 import torch.optim as optim
 from torchvision import models
 from torch.utils.data import Dataset, DataLoader
-from torchvision.ops import box_iou
+from torchvision.ops import box_iou, generalized_box_iou
 from tqdm import tqdm
 
 load_dotenv()
@@ -168,7 +168,33 @@ class BBoxModel(nn.Module):
     def forward(self, x):
         features = self.backbone(x).squeeze()
         return self.regressor(features)
+
+class CombinedLoss(nn.Module):
+    def __init__(self, alpha=0.5):
+        super(CombinedLoss, self).__init__()
+        self.alpha = alpha
+        self.mse = nn.MSELoss()
     
+    def forward(self, pred, target):
+        mse_loss = self.mse(pred, target)
+        
+        # GIoU loss
+        pred_boxes = self._convert_to_boxes(pred)
+        target_boxes = self._convert_to_boxes(target)
+        giou = generalized_box_iou(pred_boxes, target_boxes)
+        giou_loss = 1 - torch.diag(giou).mean()
+        
+        return self.alpha * mse_loss + (1 - self.alpha) * giou_loss
+    
+    def _convert_to_boxes(self, coords):
+        """Конвертирует нормализованные координаты в формат боксов"""
+        boxes = torch.zeros_like(coords)
+        boxes[:, 0] = coords[:, 0]  # x_min
+        boxes[:, 1] = coords[:, 1]  # y_min
+        boxes[:, 2] = coords[:, 2]  # x_max
+        boxes[:, 3] = coords[:, 3]  # y_max
+        return boxes
+
 def calculate_iou(pred_boxes, true_boxes):
     pred_boxes = torch.clamp(pred_boxes, 0, 1)
     true_boxes = torch.clamp(true_boxes, 0, 1)
@@ -182,12 +208,12 @@ def train_model():
     train_dataset = BBoxDataset(train_data, TARGET_SIZE)
     val_dataset = BBoxDataset(val_data, TARGET_SIZE)
 
-    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE)
+    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4, pin_memory=True)
+    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, num_workers=4, pin_memory=True)
     
     # Инициализация модели
     model = BBoxModel().to(DEVICE)
-    criterion = nn.MSELoss()
+    criterion = CombinedLoss(alpha=0.7)
     optimizer = optim.Adam(model.parameters(), lr=0.001)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=3)
 
