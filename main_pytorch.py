@@ -152,7 +152,7 @@ class BBoxDataset(Dataset):
             
             alpha = random.uniform(0.8, 1.2)
             beta = random.uniform(-30, 30)
-            img = cv2.convertScaleAbs(img, aplha=alpha, beta=beta)
+            img = cv2.convertScaleAbs(img, alpha=alpha, beta=beta)
 
         img = preprocess_image(img, self.target_size)
 
@@ -285,8 +285,7 @@ def train_model():
     plt.plot(history['val_iou'], label='Val IoU')
     plt.title('IoU during training')
     plt.legend()
-    
-    plt.savefig('training_history.png')
+
     plt.show()
     
     # Загрузка лучшей модели
