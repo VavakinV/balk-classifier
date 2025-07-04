@@ -4,7 +4,7 @@ import json
 import cv2
 import os
 import csv
-from main import rotated_rect_to_aabb, TRAIN_IMAGES_PATH, ANNOTATIONS_PATH
+from main_pytorch import rotated_rect_to_aabb, TRAIN_IMAGES_PATH, ANNOTATIONS_PATH
 
 def load_annotations(annotations_path):
     annotations = []

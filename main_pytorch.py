@@ -11,12 +11,14 @@ import torch.nn as nn
 import torch.optim as optim
 from torchvision import models
 from torch.utils.data import Dataset, DataLoader
+from torchvision.ops import box_iou
+from tqdm import tqdm
 
 load_dotenv()
 
 TARGET_SIZE = (320, 320)
 BATCH_SIZE = 32
-EPOCHS = 50
+EPOCHS = 20
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 ANNOTATIONS_PATH = os.getenv("ANNOTATIONS_PATH")
@@ -71,7 +73,7 @@ def parse_annotation(bbox_dict, original_width, original_height):
     return rotated_rect_to_aabb(cx, cy, width, height, rotation)
 
 def load_data(csv_path, img_base_dir):
-    """Загрузка данных с проверкой путей"""
+    """Загрузка данных с проверкой"""
     df = pd.read_csv(csv_path)
     data = []
     for _, row in df.iterrows():
@@ -116,10 +118,10 @@ class BBoxDataset(Dataset):
     def __init__(self, data, target_size):
         self.data = data
         self.target_size = target_size
-        
+
     def __len__(self):
         return len(self.data)
-    
+
     def __getitem__(self, idx):
         sample = self.data[idx]
         img = cv2.imread(sample['img_path'])
@@ -137,101 +139,55 @@ class BBoxDataset(Dataset):
         ]
         
         return (
-            torch.FloatTensor(img.transpose(2, 0, 1)),  # (C, H, W)
-            torch.FloatTensor(bbox_norm)                 # [x_min, y_min, x_max, y_max]
+            torch.FloatTensor(img.transpose(2, 0, 1)), # Исходное изображение в формате (channels, height, width)
+            torch.FloatTensor(bbox_norm) # Координаты AABB в формате [x_min, y_min, x_max, y_max]
         )
 
-# Модель PyTorch
 class BBoxModel(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.backbone = models.mobilenet_v2(pretrained=True).features
-        self.pool = nn.AdaptiveAvgPool2d(1)
-        self.head = nn.Sequential(
-            nn.Linear(1280, 256),
-            nn.ReLU(),
-            nn.Dropout(0.3),
-            nn.Linear(256, 4)
+    def __init__(self, input_size=TARGET_SIZE, num_classes=1):
+        super(BBoxModel, self).__init__()
+        self.input_size = input_size
+        self.grid_size = input_size // 32
+
+        self.backbone = nn.Sequential(
+            self._make_conv_block(3, 16),
+            self._make_conv_block(16, 32, stride=2),
+            self._make_conv_block(32, 64),
+            self._make_conv_block(64, 128, stride=2),
+            self._make_conv_block(128, 256),
+            self._make_conv_block(256, 512, stride=2),
+            self._make_conv_block(512, 1024),
+            self._make_conv_block(1024, 512),
         )
-        
+
+        self.detection = nn.Sequential(
+            nn.Conv2d(512, 256, 3, padding=1),
+            nn.LeakyReLU(0.1),
+            nn.Conv2d(256, 5 + num_classes, 1),  # 5: [conf, x, y, w, h] + классы
+        )
+
+    def _make_conv_block(self, in_c, out_c, stride=1):
+        return nn.Sequential(
+            nn.Conv2d(in_c, out_c, 3, stride, 1, bias=False),
+            nn.BatchNorm2d(out_c),
+            nn.LeakyReLU(0.1)
+        )
+
     def forward(self, x):
-        x = self.backbone(x)
-        x = self.pool(x)
-        x = x.view(x.size(0), -1)
-        return self.head(x)
-
-# Метрики и функции обучения
-def compute_iou(box1, box2):
-    """Вычисление IoU для numpy массивов"""
-    x_left = max(box1[0], box2[0])
-    y_top = max(box1[1], box2[1])
-    x_right = min(box1[2], box2[2])
-    y_bottom = min(box1[3], box2[3])
-    
-    if x_right < x_left or y_bottom < y_top:
-        return 0.0
-    
-    intersection = (x_right - x_left) * (y_bottom - y_top)
-    area1 = (box1[2] - box1[0]) * (box1[3] - box1[1])
-    area2 = (box2[2] - box2[0]) * (box2[3] - box2[1])
-    
-    return intersection / (area1 + area2 - intersection + 1e-6)
-
-def iou_pytorch(preds, targets):
-    """Метрика IoU для PyTorch тензоров"""
-    pred_x1, pred_y1, pred_x2, pred_y2 = preds[:, 0], preds[:, 1], preds[:, 2], preds[:, 3]
-    true_x1, true_y1, true_x2, true_y2 = targets[:, 0], targets[:, 1], targets[:, 2], targets[:, 3]
-    
-    # Корректировка "перевернутых" bbox
-    pred_x1, pred_x2 = torch.min(pred_x1, pred_x2), torch.max(pred_x1, pred_x2)
-    pred_y1, pred_y2 = torch.min(pred_y1, pred_y2), torch.max(pred_y1, pred_y2)
-    
-    intersect_x1 = torch.max(pred_x1, true_x1)
-    intersect_y1 = torch.max(pred_y1, true_y1)
-    intersect_x2 = torch.min(pred_x2, true_x2)
-    intersect_y2 = torch.min(pred_y2, true_y2)
-    
-    intersect = (intersect_x2 - intersect_x1).clamp(0) * (intersect_y2 - intersect_y1).clamp(0)
-    area_pred = (pred_x2 - pred_x1) * (pred_y2 - pred_y1)
-    area_true = (true_x2 - true_x1) * (true_y2 - true_y1)
-    
-    return intersect / (area_pred + area_true - intersect + 1e-6)
-
-def train_epoch(model, loader, optimizer, criterion):
-    model.train()
-    total_loss = 0.0
-    total_iou = 0.0
-    
-    for images, targets in loader:
-        images, targets = images.to(DEVICE), targets.to(DEVICE)
+        # Feature extraction
+        features = self.backbone(x)
         
-        optimizer.zero_grad()
-        outputs = model(images)
+        # Prediction
+        pred = self.detection(features)
         
-        loss = criterion(outputs, targets)
-        loss.backward()
-        optimizer.step()
+        # Reshape output
+        pred = pred.permute(0, 2, 3, 1)  # [batch, grid, grid, 5+classes]
         
-        total_loss += loss.item()
-        total_iou += iou_pytorch(outputs, targets).mean().item()
-    
-    return total_loss / len(loader), total_iou / len(loader)
-
-def validate(model, loader, criterion):
-    model.eval()
-    total_loss = 0.0
-    total_iou = 0.0
-    
-    with torch.no_grad():
-        for images, targets in loader:
-            images, targets = images.to(DEVICE), targets.to(DEVICE)
-            outputs = model(images)
-            
-            total_loss += criterion(outputs, targets).item()
-            total_iou += iou_pytorch(outputs, targets).mean().item()
-    
-    return total_loss / len(loader), total_iou / len(loader)
-
+        # Активации
+        pred[..., 0] = torch.sigmoid(pred[..., 0])  # Confidence
+        pred[..., 1:5] = torch.sigmoid(pred[..., 1:5])  # bbox (x,y,w,h)
+        
+        return pred
 
 def visualize_predictions(model, test_images, target_size, device, n=5):
     model.eval()
@@ -262,54 +218,162 @@ def visualize_predictions(model, test_images, target_size, device, n=5):
         plt.title(os.path.basename(img_path))
         plt.show()
 
-if __name__ == "__main__":
+def convert_yolo_outputs(yolo_outputs):
+    """Конвертирует выход YOLO в нормализованные bounding boxes"""
+    batch_size = yolo_outputs.size(0)
+    grid_size = yolo_outputs.size(1)
+    
+    boxes = []
+    for b in range(batch_size):
+        # Находим grid cell с максимальным confidence
+        conf, grid_y, grid_x = torch.max(yolo_outputs[b, ..., 0], dim=0)
+        grid_y, grid_x = grid_y.item(), grid_x.item()
+        
+        # Получаем предсказания
+        pred = yolo_outputs[b, grid_y, grid_x]
+        x_offset, y_offset, width, height = pred[1:5].sigmoid()
+        
+        # Конвертируем в абсолютные координаты
+        cx = (grid_x + x_offset) / grid_size
+        cy = (grid_y + y_offset) / grid_size
+        width = width / grid_size
+        height = height / grid_size
+        
+        # Конвертируем в [x_min, y_min, x_max, y_max]
+        x_min = cx - width/2
+        y_min = cy - height/2
+        x_max = cx + width/2
+        y_max = cy + height/2
+        
+        boxes.append(torch.tensor([x_min, y_min, x_max, y_max], device=yolo_outputs.device))
+    
+    return torch.stack(boxes)
+
+def calculate_batch_iou(pred_boxes, true_boxes):
+    """Вычисляет IoU для батча предсказаний"""
+    # Приводим к формату [x1, y1, x2, y2]
+    pred_boxes = pred_boxes.clamp(0, 1)
+    true_boxes = true_boxes / TARGET_SIZE[0]  # Нормализуем
+    
+    return box_iou(pred_boxes, true_boxes).diag()
+
+def train_model():
     # Загрузка данных
+    model = BBoxModel(input_size=TARGET_SIZE[0]).to(DEVICE)
+
     data = load_data(ANNOTATIONS_PATH, TRAIN_IMAGES_PATH)
     train_data, val_data = train_test_split(data, test_size=0.2, random_state=42)
 
     train_dataset = BBoxDataset(train_data, TARGET_SIZE)
     val_dataset = BBoxDataset(val_data, TARGET_SIZE)
-    
-    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE*2, shuffle=True, num_workers=4, pin_memory=True, persistent_workers=True)
+
+    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE)
     
-    # Инициализация модели
-    model = BBoxModel().to(DEVICE)
-    optimizer = optim.Adam(model.parameters(), lr=0.0001)
-    criterion = nn.MSELoss()
-
-    # Обучение
-    best_iou = 0.0
-    for epoch in range(EPOCHS):
-        train_loss, train_iou = train_epoch(model, train_loader, optimizer, criterion)
-        val_loss, val_iou = validate(model, val_loader, criterion)
+    # Оптимизатор и функция потерь
+    optimizer = optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-4)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=3)
+    
+    # Функция потерь для YOLO
+    def yolo_loss(preds, targets):
+        # Преобразование targets в YOLO формат
+        grid_size = preds.size(1)
+        batch_size = preds.size(0)
         
-        print(f"\nEpoch {epoch+1}/{EPOCHS}")
-        print(f"Train Loss: {train_loss:.4f} | Train IoU: {train_iou:.4f}")
-        print(f"Val Loss: {val_loss:.4f} | Val IoU: {val_iou:.4f}")
+        # Создаем target tensor [batch, grid, grid, 5]
+        target_tensor = torch.zeros(batch_size, grid_size, grid_size, 5, device=DEVICE)
+        
+        for b in range(batch_size):
+            x_min, y_min, x_max, y_max = targets[b]
+            
+            # Нормализованные координаты центра и размеров
+            cx = (x_min + x_max) / 2
+            cy = (y_min + y_max) / 2
+            width = x_max - x_min
+            height = y_max - y_min
+            
+            # Определяем grid cell
+            grid_x = min(int(cx * grid_size), grid_size - 1)
+            grid_y = min(int(cy * grid_size), grid_size - 1)
+            
+            # Заполняем target tensor
+            target_tensor[b, grid_y, grid_x, 0] = 1.0  # confidence
+            target_tensor[b, grid_y, grid_x, 1] = cx * grid_size - grid_x  # x offset
+            target_tensor[b, grid_y, grid_x, 2] = cy * grid_size - grid_y  # y offset
+            target_tensor[b, grid_y, grid_x, 3] = width  # width
+            target_tensor[b, grid_y, grid_x, 4] = height  # height
+        
+        # Выделяем предсказания для соответствующих grid cells
+        pred_conf = preds[..., 0]
+        pred_boxes = preds[..., 1:5]
+        
+        # Маска для объектов
+        obj_mask = target_tensor[..., 0] == 1
+        
+        # Потери для confidence (бинарная кросс-энтропия)
+        loss_conf = nn.functional.binary_cross_entropy(
+            pred_conf, target_tensor[..., 0], reduction='none'
+        )
+        
+        # Потери для bounding box (MSE)
+        loss_box = nn.functional.mse_loss(
+            pred_boxes[obj_mask], target_tensor[..., 1:5][obj_mask], reduction='none'
+        ).sum(-1)
+        
+        # Общие потери
+        total_loss = (loss_conf.mean() + loss_box.mean()) / 2
+        return total_loss
+    
+    # Обучение
+    best_val_loss = float('inf')
+    for epoch in range(EPOCHS):
+        model.train()
+        train_loss = 0.0
+        
+        # Прогресс-бар для обучения
+        train_iter = tqdm(train_loader, desc=f"Epoch {epoch+1}/{EPOCHS} [Train]")
+        for images, targets in train_iter:
+            images = images.to(DEVICE)
+            targets = targets.to(DEVICE) * TARGET_SIZE[0]  # Денормализация
+            
+            optimizer.zero_grad()
+            outputs = model(images)
+            loss = yolo_loss(outputs, targets)
+            loss.backward()
+            optimizer.step()
+            
+            train_loss += loss.item()
+            train_iter.set_postfix(loss=loss.item())
+        
+        # Валидация
+        model.eval()
+        val_loss = 0.0
+        val_iou = 0.0
+        
+        with torch.no_grad():
+            for images, targets in val_loader:
+                images = images.to(DEVICE)
+                targets = targets.to(DEVICE) * TARGET_SIZE[0]
+                
+                outputs = model(images)
+                val_loss += yolo_loss(outputs, targets).item()
+                
+                # Вычисление IoU
+                pred_boxes = convert_yolo_outputs(outputs)
+                val_iou += calculate_batch_iou(pred_boxes, targets).mean().item()
+        
+        # Средние метрики
+        train_loss /= len(train_loader)
+        val_loss /= len(val_loader)
+        val_iou /= len(val_loader)
+        
+        print(f"Epoch {epoch+1}: Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, Val IoU: {val_iou:.4f}")
         
         # Сохранение лучшей модели
-        if val_iou > best_iou:
-            best_iou = val_iou
-            torch.save(model.state_dict(), 'best_model.pth')
-            print(f"Модель сохранена (лучший IoU: {best_iou:.4f})")
-    
-    # Загрузка лучшей модели
-    model.load_state_dict(torch.load('best_model.pth', map_location=DEVICE))
-    
-    # Тестирование на нескольких примерах
-    test_dirs = [
-        './dataset/test/altai',
-        './dataset/test/begickaya',
-        './dataset/test/promlit',
-        './dataset/test/ruzhimmash',
-        './dataset/test/tihvin'
-    ]
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            torch.save(model.state_dict(), 'best_yolo_model.pth')
+        scheduler.step(val_loss)
 
-    test_images = []
-    for dir_path in test_dirs:
-        for filename in os.listdir(dir_path):
-            if filename.lower().endswith(('.png', '.jpg', '.jpeg')):
-                test_images.append(os.path.join(dir_path, filename))
-
-    visualize_predictions(model, test_images, TARGET_SIZE, DEVICE, n=20)
+if __name__ == "__main__":
+    train_model()
