@@ -12,7 +12,7 @@ import torch.nn as nn
 import torch.optim as optim
 from torchvision import models
 from torch.utils.data import Dataset, DataLoader
-from torchvision.ops import box_iou, generalized_box_iou
+from torchvision.ops import box_iou, generalized_box_iou_loss
 from tqdm import tqdm
 
 load_dotenv()
@@ -168,63 +168,11 @@ class BBoxModel(nn.Module):
     def forward(self, x):
         features = self.backbone(x).squeeze()
         return self.regressor(features)
-
-class GIoULoss(nn.Module):
-    def __init__(self, eps=1e-7):
-        super(GIoULoss, self).__init__()
-        self.eps = eps
-        
-    def forward(self, pred, target):
-        # Преобразование нормализованных координат в боксы
-        pred_boxes = self._convert_to_boxes(pred)
-        target_boxes = self._convert_to_boxes(target)
-        
-        # Расчет GIoU
-        giou = generalized_box_iou(pred_boxes, target_boxes)
-        
-        # GIoU loss = 1 - GIoU
-        return 1 - giou.diag().mean()
     
-    def _convert_to_boxes(self, coords):
-        """Конвертирует нормализованные координаты в формат боксов"""
-        boxes = torch.zeros_like(coords)
-        boxes[:, 0] = coords[:, 0]  # x_min
-        boxes[:, 1] = coords[:, 1]  # y_min
-        boxes[:, 2] = coords[:, 2]  # x_max
-        boxes[:, 3] = coords[:, 3]  # y_max
-        return boxes
-
-# def calculate_iou(pred_boxes, true_boxes):
-#     pred_boxes = torch.clamp(pred_boxes, 0, 1)
-#     true_boxes = torch.clamp(true_boxes, 0, 1)
-#     return box_iou(pred_boxes, true_boxes).diag().mean().item()
-
 def calculate_iou(pred_boxes, true_boxes):
-    """
-    Рассчитывает средний IoU для батча
-    pred_boxes: [batch_size, 4] в формате (x_min, y_min, x_max, y_max)
-    true_boxes: [batch_size, 4] в формате (x_min, y_min, x_max, y_max)
-    """
-    # Преобразование в абсолютные координаты
     pred_boxes = torch.clamp(pred_boxes, 0, 1)
     true_boxes = torch.clamp(true_boxes, 0, 1)
-    
-    # Расчет пересечений
-    inter_xmin = torch.max(pred_boxes[:, 0], true_boxes[:, 0])
-    inter_ymin = torch.max(pred_boxes[:, 1], true_boxes[:, 1])
-    inter_xmax = torch.min(pred_boxes[:, 2], true_boxes[:, 2])
-    inter_ymax = torch.min(pred_boxes[:, 3], true_boxes[:, 3])
-    
-    inter_area = torch.clamp(inter_xmax - inter_xmin, min=0) * torch.clamp(inter_ymax - inter_ymin, min=0)
-    
-    # Расчет объединений
-    pred_area = (pred_boxes[:, 2] - pred_boxes[:, 0]) * (pred_boxes[:, 3] - pred_boxes[:, 1])
-    true_area = (true_boxes[:, 2] - true_boxes[:, 0]) * (true_boxes[:, 3] - true_boxes[:, 1])
-    union_area = pred_area + true_area - inter_area
-    
-    # Избегаем деления на ноль
-    iou = inter_area / (union_area + 1e-6)
-    return iou.mean().item()
+    return box_iou(pred_boxes, true_boxes).diag().mean().item()
 
 def train_model():
     # Загрузка данных
@@ -234,14 +182,13 @@ def train_model():
     train_dataset = BBoxDataset(train_data, TARGET_SIZE)
     val_dataset = BBoxDataset(val_data, TARGET_SIZE)
 
-    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4, pin_memory=True)
-    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, num_workers=4, pin_memory=True)
+    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE)
     
     # Инициализация модели
     model = BBoxModel().to(DEVICE)
-    criterion = GIoULoss()
     optimizer = optim.Adam(model.parameters(), lr=0.001)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.2, patience=5, min_lr=1e-6)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=3)
 
     best_val_iou = 0.0
     history = {'train_loss': [], 'val_loss': [], 'train_iou': [], 'val_iou': []}
@@ -258,7 +205,7 @@ def train_model():
             optimizer.zero_grad()
             outputs = model(images)
             
-            loss = criterion(outputs, targets)
+            loss = generalized_box_iou_loss(outputs, targets, reduction='mean')
             loss.backward()
             optimizer.step()
             
@@ -281,7 +228,7 @@ def train_model():
                 targets = targets.to(DEVICE)
                 
                 outputs = model(images)
-                loss = criterion(outputs, targets)
+                loss = generalized_box_iou_loss(outputs, targets, reduction='mean')
                 
                 val_loss += loss.item() * images.size(0)
                 val_iou += calculate_iou(outputs, targets) * images.size(0)
@@ -291,7 +238,7 @@ def train_model():
         history['val_loss'].append(val_loss)
         history['val_iou'].append(val_iou)
         
-        scheduler.step(val_iou)
+        scheduler.step(val_loss)
         
         # Вывод информации о текущем learning rate
         current_lr = optimizer.param_groups[0]['lr']
@@ -301,8 +248,8 @@ def train_model():
                 f"Val Loss: {val_loss:.4f} | Val IoU: {val_iou:.4f} | "
                 f"LR: {current_lr:.6f}")
         
-        if val_loss > best_val_iou:
-            best_val_iou = val_loss
+        if val_iou > best_val_iou:
+            best_val_iou = val_iou
             torch.save(model.state_dict(), "best_model.pth")
             print("Model saved!")
     
@@ -319,7 +266,8 @@ def train_model():
     plt.plot(history['val_iou'], label='Val IoU')
     plt.title('IoU during training')
     plt.legend()
-
+    
+    plt.savefig('training_history.png')
     plt.show()
     
     # Загрузка лучшей модели
