@@ -20,7 +20,7 @@ load_dotenv()
 
 TARGET_SIZE = (320, 320)
 BATCH_SIZE = 32
-EPOCHS = 45
+EPOCHS = 40
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 ANNOTATIONS_PATH = os.getenv("ANNOTATIONS_PATH")
@@ -169,64 +169,69 @@ class BBoxDataset(Dataset):
             torch.FloatTensor(bbox_norm) # Координаты AABB в формате [x_min, y_min, x_max, y_max]
         )
 
-class CombinedLoss(nn.Module):
-    def __init__(self, alpha=0.7):
-        super(CombinedLoss, self).__init__()
-        self.alpha = alpha
-        self.mse = nn.MSELoss()
-        
-    def forward(self, pred, target):
-        # MSE компонент
-        mse_loss = self.mse(pred, target)
-        
-        # IoU компонент с улучшенной стабильностью
-        pred = torch.clamp(pred, 0, 1)
-        target = torch.clamp(target, 0, 1)
-        
-        # Координаты пересечения
-        inter_xmin = torch.max(pred[:, 0], target[:, 0])
-        inter_ymin = torch.max(pred[:, 1], target[:, 1])
-        inter_xmax = torch.min(pred[:, 2], target[:, 2])
-        inter_ymax = torch.min(pred[:, 3], target[:, 3])
-        
-        # Площадь пересечения
-        inter_width = torch.clamp(inter_xmax - inter_xmin, min=0)
-        inter_height = torch.clamp(inter_ymax - inter_ymin, min=0)
-        inter_area = inter_width * inter_height
-        
-        # Площади прямоугольников
-        pred_area = (pred[:, 2] - pred[:, 0]) * (pred[:, 3] - pred[:, 1])
-        target_area = (target[:, 2] - target[:, 0]) * (target[:, 3] - target[:, 1])
-        
-        # Объединение
-        union_area = pred_area + target_area - inter_area + 1e-6
-        
-        # IoU
-        iou = inter_area / union_area
-        
-        # Стабильная версия IoU loss
-        iou_loss = -torch.log(iou + 1e-6) 
-        
-        # Комбинированная потеря
-        return self.alpha * mse_loss + (1 - self.alpha) * iou_loss.mean()
+class SpatialAttention(nn.Module):
+    def __init__(self, kernel_size=7):
+        super(SpatialAttention, self).__init__()
+        self.conv = nn.Conv2d(2, 1, kernel_size=kernel_size, padding=kernel_size//2, bias=False)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        avg_out = torch.mean(x, dim=1, keepdim=True)
+        max_out, _ = torch.max(x, dim=1, keepdim=True)
+        combined = torch.cat([avg_out, max_out], dim=1)
+        att_map = self.conv(combined)
+        return x * self.sigmoid(att_map)
 
 class BBoxModel(nn.Module):
     def __init__(self, input_size=TARGET_SIZE, num_classes=1):
         super(BBoxModel, self).__init__()
-        self.backbone = models.resnet18(pretrained=True)
-        self.backbone.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False)
-        self.backbone = nn.Sequential(*list(self.backbone.children())[:-1])
+        resnet = models.resnet18(pretrained=True)
+        self.layer0 = nn.Sequential(
+            resnet.conv1,
+            resnet.bn1,
+            resnet.relu
+        )
+        self.layer1 = nn.Sequential(
+            resnet.maxpool,
+            resnet.layer1
+        )
+        self.layer2 = resnet.layer2
+        self.layer3 = resnet.layer3
+        
+        # Добавляем блоки пространственного внимания
+        self.att1 = SpatialAttention(kernel_size=7)
+        self.att2 = SpatialAttention(kernel_size=5)
+        
+        # Адаптивный пулинг для сохранения пространственной информации
+        self.adaptive_pool = nn.AdaptiveAvgPool2d((4, 4))
+
         self.regressor = nn.Sequential(
+            nn.Linear(256*4*4, 512),
+            nn.ReLU(),
+            nn.Dropout(0.4),
             nn.Linear(512, 256),
             nn.ReLU(),
-            nn.Dropout(0.3),
             nn.Linear(256, 4),
             nn.Sigmoid()
         )
 
     def forward(self, x):
-        features = self.backbone(x).squeeze()
-        return self.regressor(features)
+        x = self.layer0(x)
+        x = self.layer1(x)
+        x = self.layer2(x)
+        
+        # Первый блок внимания
+        x = self.att1(x)
+        x = self.layer3(x)
+        
+        # Второй блок внимания
+        x = self.att2(x)
+        
+        # Пулинг и выравнивание
+        x = self.adaptive_pool(x)
+        x = x.view(x.size(0), -1)
+
+        return self.regressor(x)
     
 def calculate_iou(pred_boxes, true_boxes):
     pred_boxes = torch.clamp(pred_boxes, 0, 1)
@@ -246,7 +251,7 @@ def train_model():
     
     # Инициализация модели
     model = BBoxModel().to(DEVICE)
-    criterion = CombinedLoss(alpha=0.7)
+    criterion = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=0.001)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=3)
 
@@ -409,4 +414,4 @@ if __name__ == "__main__":
     print(f"Found {len(test_images)} test images")
     
     # Визуализация результатов
-    visualize_predictions(trained_model, test_images, TARGET_SIZE, DEVICE, n=20)
+    visualize_predictions(trained_model, test_images, TARGET_SIZE, DEVICE, n=10)
