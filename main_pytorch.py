@@ -169,6 +169,41 @@ class BBoxDataset(Dataset):
             torch.FloatTensor(bbox_norm) # Координаты AABB в формате [x_min, y_min, x_max, y_max]
         )
 
+class IoULoss(nn.Module):
+    def __init__(self, reduction='mean'):
+        super(IoULoss, self).__init__()
+        self.reduction = reduction
+        
+    def forward(self, pred, target):
+        # Обеспечиваем валидные значения
+        pred = torch.clamp(pred, 0, 1)
+        target = torch.clamp(target, 0, 1)
+        
+        # Вычисляем площади пересечения
+        inter_xmin = torch.max(pred[:, 0], target[:, 0])
+        inter_ymin = torch.max(pred[:, 1], target[:, 1])
+        inter_xmax = torch.min(pred[:, 2], target[:, 2])
+        inter_ymax = torch.min(pred[:, 3], target[:, 3])
+        
+        inter_area = torch.clamp(inter_xmax - inter_xmin, min=0) * torch.clamp(inter_ymax - inter_ymin, min=0)
+        
+        # Вычисляем площади объединения
+        pred_area = (pred[:, 2] - pred[:, 0]) * (pred[:, 3] - pred[:, 1])
+        target_area = (target[:, 2] - target[:, 0]) * (target[:, 3] - target[:, 1])
+        union_area = pred_area + target_area - inter_area
+        
+        # Вычисляем IoU
+        iou = inter_area / (union_area + 1e-6)
+        
+        # Возвращаем 1 - IoU как loss
+        loss = 1.0 - iou
+        
+        if self.reduction == 'mean':
+            return loss.mean()
+        elif self.reduction == 'sum':
+            return loss.sum()
+        return loss
+
 class BBoxModel(nn.Module):
     def __init__(self, input_size=TARGET_SIZE, num_classes=1):
         super(BBoxModel, self).__init__()
@@ -205,8 +240,8 @@ def train_model():
     
     # Инициализация модели
     model = BBoxModel().to(DEVICE)
-    criterion = nn.MSELoss()
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
+    criterion = IoULoss()
+    optimizer = optim.AdamW(model.parameters(), lr=0.001, weight_decay=1e-4)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=3)
 
     best_val_loss = float('inf')
