@@ -5,14 +5,15 @@ import pandas as pd
 import cv2
 import matplotlib.pyplot as plt
 import glob
+import random
 from dotenv import load_dotenv
 from sklearn.model_selection import train_test_split
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torchvision import models
+from torchvision import models, transforms
 from torch.utils.data import Dataset, DataLoader
-from torchvision.ops import box_iou, generalized_box_iou_loss
+from torchvision.ops import box_iou
 from tqdm import tqdm
 
 load_dotenv()
@@ -123,9 +124,17 @@ def preprocess_image(img, target_size):
     return img
 
 class BBoxDataset(Dataset):
-    def __init__(self, data, target_size):
+    def __init__(self, data, target_size, augment=False):
         self.data = data
         self.target_size = target_size
+        self.augment = augment
+        self.transform = transforms.Compose([
+            transforms.ToPILImage(),
+            transforms.RandomHorizontalFlip(p=0.5),
+            transforms.RandomRotation(10),
+            transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
+            transforms.ToTensor()
+        ])
 
     def __len__(self):
         return len(self.data)
@@ -133,11 +142,47 @@ class BBoxDataset(Dataset):
     def __getitem__(self, idx):
         sample = self.data[idx]
         img = cv2.imread(sample['img_path'])
-        img = preprocess_image(img, self.target_size)
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         
         bbox = sample['bbox']
         orig_w, orig_h = sample['orig_width'], sample['orig_height']
         
+        if self.augment:
+            # Случайное масштабирование
+            scale = random.uniform(0.8, 1.2)
+            new_w, new_h = int(orig_w * scale), int(orig_h * scale)
+            img = cv2.resize(img, (new_w, new_h))
+            
+            # Случайный сдвиг
+            dx = random.randint(-int(orig_w*0.1), int(orig_w*0.1))
+            dy = random.randint(-int(orig_h*0.1), int(orig_h*0.1))
+            
+            # Применяем трансформации к bbox
+            bbox = [
+                max(0, min(orig_w, bbox[0] * scale + dx)),
+                max(0, min(orig_h, bbox[1] * scale + dy)),
+                max(0, min(orig_w, bbox[2] * scale + dx)),
+                max(0, min(orig_h, bbox[3] * scale + dy))
+            ]
+            
+            # Случайное кадрирование
+            if random.random() > 0.5:
+                crop_size = random.randint(int(min(new_w, new_h)*0.7), min(new_w, new_h))
+                x = random.randint(0, new_w - crop_size)
+                y = random.randint(0, new_h - crop_size)
+                img = img[y:y+crop_size, x:x+crop_size]
+                bbox = [
+                    max(0, bbox[0] - x),
+                    max(0, bbox[1] - y),
+                    min(crop_size, bbox[2] - x),
+                    min(crop_size, bbox[3] - y)
+                ]
+                new_w, new_h = crop_size, crop_size
+
+            orig_w, orig_h = new_w, new_h
+
+        img = preprocess_image(img, self.target_size)
+
         # Нормализация координат
         bbox_norm = [
             bbox[0] / orig_w,
@@ -145,9 +190,14 @@ class BBoxDataset(Dataset):
             bbox[2] / orig_w,
             bbox[3] / orig_h
         ]
+
+        if self.augment:
+            img = self.transform(img)
+        else:
+            img = torch.FloatTensor(img.transpose(2, 0, 1))
         
         return (
-            torch.FloatTensor(img.transpose(2, 0, 1)), # Исходное изображение в формате (channels, height, width)
+            img, # Исходное изображение в формате (channels, height, width)
             torch.FloatTensor(bbox_norm) # Координаты AABB в формате [x_min, y_min, x_max, y_max]
         )
 
@@ -179,7 +229,7 @@ def train_model():
     data = load_data(ANNOTATIONS_PATH, TRAIN_IMAGES_PATH)
     train_data, val_data = train_test_split(data, test_size=0.2, random_state=42)
 
-    train_dataset = BBoxDataset(train_data, TARGET_SIZE)
+    train_dataset = BBoxDataset(train_data, TARGET_SIZE, augment=True)
     val_dataset = BBoxDataset(val_data, TARGET_SIZE)
 
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
@@ -187,10 +237,11 @@ def train_model():
     
     # Инициализация модели
     model = BBoxModel().to(DEVICE)
+    criterion = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=0.001)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=3)
 
-    best_val_iou = 0.0
+    best_val_loss = float('inf')
     history = {'train_loss': [], 'val_loss': [], 'train_iou': [], 'val_iou': []}
     
     for epoch in range(EPOCHS):
@@ -205,7 +256,7 @@ def train_model():
             optimizer.zero_grad()
             outputs = model(images)
             
-            loss = generalized_box_iou_loss(outputs, targets, reduction='mean')
+            loss = criterion(outputs, targets)
             loss.backward()
             optimizer.step()
             
@@ -228,7 +279,7 @@ def train_model():
                 targets = targets.to(DEVICE)
                 
                 outputs = model(images)
-                loss = generalized_box_iou_loss(outputs, targets, reduction='mean')
+                loss = criterion(outputs, targets)
                 
                 val_loss += loss.item() * images.size(0)
                 val_iou += calculate_iou(outputs, targets) * images.size(0)
@@ -248,8 +299,8 @@ def train_model():
                 f"Val Loss: {val_loss:.4f} | Val IoU: {val_iou:.4f} | "
                 f"LR: {current_lr:.6f}")
         
-        if val_iou > best_val_iou:
-            best_val_iou = val_iou
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
             torch.save(model.state_dict(), "best_model.pth")
             print("Model saved!")
     
