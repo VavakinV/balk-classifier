@@ -245,6 +245,29 @@ def calculate_iou(pred_boxes, true_boxes):
     true_boxes = torch.clamp(true_boxes, 0, 1)
     return box_iou(pred_boxes, true_boxes).diag().mean().item()
 
+class CombinedLoss(nn.Module):
+    def __init__(self, alpha=0.7):
+        super().__init__()
+        self.alpha = alpha
+        self.mse = nn.MSELoss()
+        
+    def forward(self, pred, target):
+        mse_loss = self.mse(pred, target)
+        
+        # IoU компонент
+        pred = torch.clamp(pred, 0, 1)
+        target = torch.clamp(target, 0, 1)
+        
+        inter = (torch.min(pred[:,2], target[:,2]) - torch.max(pred[:,0], target[:,0])) * \
+                (torch.min(pred[:,3], target[:,3]) - torch.max(pred[:,1], target[:,1]))
+        union = (pred[:,2]-pred[:,0])*(pred[:,3]-pred[:,1]) + \
+                (target[:,2]-target[:,0])*(target[:,3]-target[:,1]) - inter
+        
+        iou = torch.clamp(inter / (union + 1e-6), min=0)
+        iou_loss = 1 - iou.mean()
+        
+        return self.alpha * mse_loss + (1-self.alpha) * iou_loss
+
 def train_model():
     # Загрузка данных
     data = load_data(ANNOTATIONS_PATH, TRAIN_IMAGES_PATH)
@@ -258,7 +281,7 @@ def train_model():
     
     # Инициализация модели
     model = BBoxModel().to(DEVICE)
-    criterion = nn.MSELoss()
+    criterion = CombinedLoss(alpha=0.7)
     optimizer = optim.Adam(model.parameters(), lr=0.001)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, 
