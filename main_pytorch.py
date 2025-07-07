@@ -20,7 +20,7 @@ from tqdm import tqdm
 load_dotenv()
 
 TARGET_SIZE = (320, 320)
-BATCH_SIZE = 64
+BATCH_SIZE = 32
 EPOCHS = 40
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -170,81 +170,123 @@ class BBoxDataset(Dataset):
             torch.FloatTensor(bbox_norm) # Координаты AABB в формате [x_min, y_min, x_max, y_max]
         )
 
-class SpatialAttention(nn.Module):
-    def __init__(self, kernel_size=7):
-        super(SpatialAttention, self).__init__()
-        self.conv = nn.Conv2d(2, 1, kernel_size=kernel_size, padding=kernel_size//2, bias=False)
+class HierarchicalSpatialAttention(nn.Module):
+    def __init__(self, in_channels, reduction_ratio=16, kernel_sizes=[7, 5, 3]):
+        super(HierarchicalSpatialAttention, self).__init__()
+        self.channel_attention = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(in_channels, in_channels // reduction_ratio, kernel_size=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(in_channels // reduction_ratio, in_channels, kernel_size=1),
+            nn.Sigmoid()
+        )
+        
+        self.spatial_attentions = nn.ModuleList()
+        for ksize in kernel_sizes:
+            self.spatial_attentions.append(
+                nn.Sequential(
+                    nn.Conv2d(2, 1, kernel_size=ksize, padding=ksize//2, bias=False),
+                    nn.Sigmoid()
+                )
+            )
+        
+        self.final_conv = nn.Conv2d(len(kernel_sizes), 1, kernel_size=1)
         self.sigmoid = nn.Sigmoid()
 
     def forward(self, x):
+        # Канальное внимание
+        channel_att = self.channel_attention(x)
+        x = x * channel_att
+        
+        # Пространственное внимание на разных масштабах
+        spatial_att_maps = []
         avg_out = torch.mean(x, dim=1, keepdim=True)
         max_out, _ = torch.max(x, dim=1, keepdim=True)
         combined = torch.cat([avg_out, max_out], dim=1)
-        att_map = self.conv(combined)
-        return x * self.sigmoid(att_map)
+        
+        for att in self.spatial_attentions:
+            spatial_att_maps.append(att(combined))
+        
+        # Комбинирование карт внимания
+        spatial_att = torch.cat(spatial_att_maps, dim=1)
+        spatial_att = self.final_conv(spatial_att)
+        spatial_att = self.sigmoid(spatial_att)
+        
+        return x * spatial_att
 
 class BBoxModel(nn.Module):
-    def __init__(self, input_size=TARGET_SIZE):
+    def __init__(self, input_size=TARGET_SIZE, num_classes=1):
         super(BBoxModel, self).__init__()
         resnet = models.resnet18(pretrained=True)
         
-        # Извлекаем слои ResNet для FPN
-        self.layer0 = nn.Sequential(resnet.conv1, resnet.bn1, resnet.relu)
-        self.layer1 = nn.Sequential(resnet.maxpool, resnet.layer1)  # out: 64 channels
-        self.layer2 = resnet.layer2  # out: 128 channels
-        self.layer3 = resnet.layer3  # out: 256 channels
+        # Извлекаем слои с разным разрешением
+        self.conv1 = nn.Sequential(
+            resnet.conv1,
+            resnet.bn1,
+            resnet.relu
+        )
+        self.layer1 = nn.Sequential(
+            resnet.maxpool,
+            resnet.layer1
+        )
+        self.layer2 = resnet.layer2
+        self.layer3 = resnet.layer3
         
-        # FPN боковые ветви
-        self.lat4 = nn.Conv2d(256, 256, kernel_size=1)
-        self.lat3 = nn.Conv2d(128, 256, kernel_size=1)
-        self.lat2 = nn.Conv2d(64, 256, kernel_size=1)
+        # Многоуровневое внимание на разных стадиях сети
+        self.att1 = HierarchicalSpatialAttention(in_channels=64, kernel_sizes=[7, 5])
+        self.att2 = HierarchicalSpatialAttention(in_channels=128, kernel_sizes=[5, 3])
+        self.att3 = HierarchicalSpatialAttention(in_channels=256, kernel_sizes=[3, 1])
         
-        # FPN сглаживающие слои
-        self.smooth4 = nn.Conv2d(256, 256, kernel_size=3, padding=1)
-        self.smooth3 = nn.Conv2d(256, 256, kernel_size=3, padding=1)
-        self.smooth2 = nn.Conv2d(256, 256, kernel_size=3, padding=1)
+        # Feature Pyramid Network для комбинирования признаков
+        self.lat1 = nn.Conv2d(256, 128, kernel_size=1)
+        self.lat2 = nn.Conv2d(128, 64, kernel_size=1)
+        self.smooth1 = nn.Conv2d(128, 128, kernel_size=3, padding=1)
+        self.smooth2 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
         
-        # Механизм внимания
-        self.attention = SpatialAttention(kernel_size=5)
+        # Адаптивный пулинг
+        self.adaptive_pool = nn.AdaptiveAvgPool2d((4, 4))
         
-        # Нормализация
-        self.norm = nn.BatchNorm1d(256*4*4)
-
-        # Регрессор
+        # Регрессор с большей емкостью
         self.regressor = nn.Sequential(
-            nn.Linear(256*4*4, 512),
+            nn.Linear(64*4*4, 256),
             nn.ReLU(),
             nn.Dropout(0.3),
-            nn.Linear(512, 256),
+            nn.Linear(256, 128),
             nn.ReLU(),
-            nn.Linear(256, 4),
+            nn.Linear(128, 64),
+            nn.ReLU(),
+            nn.Linear(64, 4),
             nn.Sigmoid()
         )
 
     def forward(self, x):
-        # Bottom-up pathway
-        c2 = self.layer0(x)
-        c3 = self.layer1(c2)
-        c4 = self.layer2(c3)
-        c5 = self.layer3(c4)
+        # Bottom-up path
+        c1 = self.conv1(x)      # 1/2
+        c2 = self.layer1(c1)     # 1/4
+        c2_att = self.att1(c2)
         
-        # Top-down pathway
-        p5 = self.lat4(c5)
-        p4 = self.lat3(c4) + F.interpolate(p5, scale_factor=2, mode='nearest')
-        p3 = self.lat2(c3) + F.interpolate(p4, scale_factor=2, mode='nearest')
+        c3 = self.layer2(c2_att) # 1/8
+        c3_att = self.att2(c3)
         
-        # Сглаживание
-        p4 = self.smooth4(p4)
-        p3 = self.smooth3(p3)
-        p2 = self.smooth2(p3)
+        c4 = self.layer3(c3_att) # 1/16
+        c4_att = self.att3(c4)
         
-        # Выбираем уровень с наибольшим разрешением (p2)
-        features = self.attention(p2)
-        features = F.adaptive_avg_pool2d(features, (4, 4))
-        features = features.view(features.size(0), -1)
-        features = self.norm(features)
-
-        return self.regressor(features)
+        # Top-down path (Feature Pyramid Network)
+        p4 = c4_att
+        p3 = self.lat1(p4)
+        p3 = nn.functional.interpolate(p3, scale_factor=2, mode='nearest')
+        p3 = p3 + c3_att
+        p3 = self.smooth1(p3)
+        
+        p2 = self.lat2(p3)
+        p2 = nn.functional.interpolate(p2, scale_factor=2, mode='nearest')
+        p2 = p2 + c2_att
+        p2 = self.smooth2(p2)
+        
+        # Пулинг и регрессия
+        x = self.adaptive_pool(p2)
+        x = x.view(x.size(0), -1)
+        return self.regressor(x)
     
 def calculate_iou(pred_boxes, true_boxes):
     pred_boxes = torch.clamp(pred_boxes, 0, 1)
@@ -265,7 +307,7 @@ def train_model():
     # Инициализация модели
     model = BBoxModel().to(DEVICE)
     criterion = nn.MSELoss()
-    optimizer = optim.Adam(model.parameters(), lr=0.0001)
+    optimizer = optim.Adam(model.parameters(), lr=0.001)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=3)
 
     best_val_loss = float('inf')
