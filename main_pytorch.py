@@ -11,6 +11,7 @@ from sklearn.model_selection import train_test_split
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import torch.nn.functional as F
 from torchvision import models, transforms
 from torch.utils.data import Dataset, DataLoader
 from torchvision.ops import box_iou
@@ -183,32 +184,34 @@ class SpatialAttention(nn.Module):
         return x * self.sigmoid(att_map)
 
 class BBoxModel(nn.Module):
-    def __init__(self, input_size=TARGET_SIZE, num_classes=1):
+    def __init__(self, input_size=TARGET_SIZE):
         super(BBoxModel, self).__init__()
         resnet = models.resnet18(pretrained=True)
-        self.layer0 = nn.Sequential(
-            resnet.conv1,
-            resnet.bn1,
-            resnet.relu
-        )
-        self.layer1 = nn.Sequential(
-            resnet.maxpool,
-            resnet.layer1
-        )
-        self.layer2 = resnet.layer2
-        self.layer3 = resnet.layer3
         
-        # Добавляем блоки пространственного внимания
-        self.att1 = SpatialAttention(kernel_size=7)
-        self.att2 = SpatialAttention(kernel_size=5)
+        # Извлекаем слои ResNet для FPN
+        self.layer0 = nn.Sequential(resnet.conv1, resnet.bn1, resnet.relu)
+        self.layer1 = nn.Sequential(resnet.maxpool, resnet.layer1)  # out: 64 channels
+        self.layer2 = resnet.layer2  # out: 128 channels
+        self.layer3 = resnet.layer3  # out: 256 channels
         
-        # Адаптивный пулинг для сохранения пространственной информации
-        self.adaptive_pool = nn.AdaptiveAvgPool2d((4, 4))
-
+        # FPN боковые ветви
+        self.lat4 = nn.Conv2d(256, 256, kernel_size=1)
+        self.lat3 = nn.Conv2d(128, 256, kernel_size=1)
+        self.lat2 = nn.Conv2d(64, 256, kernel_size=1)
+        
+        # FPN сглаживающие слои
+        self.smooth4 = nn.Conv2d(256, 256, kernel_size=3, padding=1)
+        self.smooth3 = nn.Conv2d(256, 256, kernel_size=3, padding=1)
+        self.smooth2 = nn.Conv2d(256, 256, kernel_size=3, padding=1)
+        
+        # Механизм внимания
+        self.attention = SpatialAttention(kernel_size=5)
+        
+        # Регрессор
         self.regressor = nn.Sequential(
             nn.Linear(256*4*4, 512),
             nn.ReLU(),
-            nn.Dropout(0.4),
+            nn.Dropout(0.3),
             nn.Linear(512, 256),
             nn.ReLU(),
             nn.Linear(256, 4),
@@ -216,22 +219,28 @@ class BBoxModel(nn.Module):
         )
 
     def forward(self, x):
-        x = self.layer0(x)
-        x = self.layer1(x)
-        x = self.layer2(x)
+        # Bottom-up pathway
+        c2 = self.layer0(x)
+        c3 = self.layer1(c2)
+        c4 = self.layer2(c3)
+        c5 = self.layer3(c4)
         
-        # Первый блок внимания
-        x = self.att1(x)
-        x = self.layer3(x)
+        # Top-down pathway
+        p5 = self.lat4(c5)
+        p4 = self.lat3(c4) + F.interpolate(p5, scale_factor=2, mode='nearest')
+        p3 = self.lat2(c3) + F.interpolate(p4, scale_factor=2, mode='nearest')
         
-        # Второй блок внимания
-        x = self.att2(x)
+        # Сглаживание
+        p4 = self.smooth4(p4)
+        p3 = self.smooth3(p3)
+        p2 = self.smooth2(p3)
         
-        # Пулинг и выравнивание
-        x = self.adaptive_pool(x)
-        x = x.view(x.size(0), -1)
-
-        return self.regressor(x)
+        # Выбираем уровень с наибольшим разрешением (p2)
+        features = self.attention(p2)
+        features = F.adaptive_avg_pool2d(features, (4, 4))
+        features = features.view(features.size(0), -1)
+        
+        return self.regressor(features)
     
 def calculate_iou(pred_boxes, true_boxes):
     pred_boxes = torch.clamp(pred_boxes, 0, 1)
