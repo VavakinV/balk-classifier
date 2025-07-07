@@ -173,17 +173,22 @@ class SpatialAttention(nn.Module):
     def __init__(self, kernel_size=7):
         super(SpatialAttention, self).__init__()
         self.conv = nn.Sequential(
-            nn.Conv2d(2, 8, kernel_size=3, padding=1, bias=False),
+            nn.Conv2d(3, 8, kernel_size=3, padding=1, bias=False),
             nn.ReLU(),
             nn.Conv2d(8, 1, kernel_size=kernel_size, padding=kernel_size//2, bias=False)
         )
         self.sigmoid = nn.Sigmoid()
+        # Инициализация весов
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
 
     def forward(self, x):
-        mean_out = torch.mean(x, dim=1, keepdim=True)
         max_out, _ = torch.max(x, dim=1, keepdim=True)
+        mean_out = torch.mean(x, dim=1, keepdim=True)
         std_out = torch.std(x, dim=1, keepdim=True)
-        combined = torch.cat([mean_out, max_out, std_out], dim=1)
+        
+        combined = torch.cat([max_out, mean_out, std_out], dim=1)
         att_map = self.conv(combined)
         return x * self.sigmoid(att_map)
 
@@ -191,23 +196,20 @@ class BBoxModel(nn.Module):
     def __init__(self, input_size=TARGET_SIZE, num_classes=1):
         super(BBoxModel, self).__init__()
         resnet = models.resnet18(pretrained=True)
-        self.layer0 = nn.Sequential(
-            resnet.conv1,
-            resnet.bn1,
-            resnet.relu
-        )
-        self.layer1 = nn.Sequential(
-            resnet.maxpool,
-            resnet.layer1
-        )
+        
+        self.conv1 = resnet.conv1
+        self.bn1 = resnet.bn1
+        self.relu = resnet.relu
+        self.maxpool = resnet.maxpool
+        self.layer1 = resnet.layer1
         self.layer2 = resnet.layer2
         self.layer3 = resnet.layer3
         
-        # Добавляем блоки пространственного внимания
+        # Блоки внимания после layer2 и layer3
         self.att1 = SpatialAttention(kernel_size=5)
         self.att2 = SpatialAttention(kernel_size=9)
         
-        # Адаптивный пулинг для сохранения пространственной информации
+        # Адаптивный пулинг
         self.adaptive_pool = nn.AdaptiveAvgPool2d((4, 4))
 
         self.regressor = nn.Sequential(
@@ -221,22 +223,21 @@ class BBoxModel(nn.Module):
         )
 
     def forward(self, x):
-        x = self.layer0(x)
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = self.relu(x)
+        x = self.maxpool(x)
+        
         x = self.layer1(x)
+        
         x = self.layer2(x)
-        
-        # Первый блок внимания
-        residual = x
-        x = self.att1(x) + self.att_conv(residual)
+        x = self.att1(x)
+
         x = self.layer3(x)
-        
-        # Второй блок внимания
         x = self.att2(x)
-        
-        # Пулинг и выравнивание
+
         x = self.adaptive_pool(x)
         x = x.view(x.size(0), -1)
-
         return self.regressor(x)
     
 def calculate_iou(pred_boxes, true_boxes):
