@@ -245,10 +245,6 @@ def calculate_iou(pred_boxes, true_boxes):
     true_boxes = torch.clamp(true_boxes, 0, 1)
     return box_iou(pred_boxes, true_boxes).diag().mean().item()
 
-def composite_loss(pred, target):
-    mse = nn.MSELoss()(pred, target)
-    giou = 1 - torch.mean(generalized_box_iou_loss(pred, target))
-    return mse + giou
 
 def train_model():
     # Загрузка данных
@@ -263,7 +259,7 @@ def train_model():
     
     # Инициализация модели
     model = BBoxModel().to(DEVICE)
-    criterion = composite_loss
+    criterion = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=0.001)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, 
