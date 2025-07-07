@@ -12,6 +12,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torchvision import models, transforms
+from torchvision.models import efficientnet_b4, EfficientNet_B4_Weights
 from torch.utils.data import Dataset, DataLoader
 from torchvision.ops import box_iou
 from tqdm import tqdm
@@ -19,7 +20,7 @@ from tqdm import tqdm
 load_dotenv()
 
 TARGET_SIZE = (320, 320)
-BATCH_SIZE = 32
+BATCH_SIZE = 16
 EPOCHS = 40
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -195,47 +196,32 @@ class SpatialAttention(nn.Module):
 class BBoxModel(nn.Module):
     def __init__(self, input_size=TARGET_SIZE, num_classes=1):
         super(BBoxModel, self).__init__()
-        resnet = models.resnet18(pretrained=True)
+        self.backbone = efficientnet_b4(weights=EfficientNet_B4_Weights.IMAGENET1K_V1).features
         
-        self.conv1 = resnet.conv1
-        self.bn1 = resnet.bn1
-        self.relu = resnet.relu
-        self.maxpool = resnet.maxpool
-        self.layer1 = resnet.layer1
-        self.layer2 = resnet.layer2
-        self.layer3 = resnet.layer3
-        
-        # Блоки внимания после layer2 и layer3
+        # Блоки пространственного внимания
         self.att1 = SpatialAttention(kernel_size=5)
         self.att2 = SpatialAttention(kernel_size=9)
         
-        # Адаптивный пулинг
         self.adaptive_pool = nn.AdaptiveAvgPool2d((4, 4))
 
         self.regressor = nn.Sequential(
-            nn.Linear(256*4*4, 512),
+            nn.Linear(1792*4*4, 1024),
             nn.ReLU(),
             nn.Dropout(0.4),
-            nn.Linear(512, 256),
+            nn.Linear(1024, 512),
             nn.ReLU(),
-            nn.Linear(256, 4),
+            nn.Linear(512, 4),
             nn.Sigmoid()
         )
 
     def forward(self, x):
-        x = self.conv1(x)
-        x = self.bn1(x)
-        x = self.relu(x)
-        x = self.maxpool(x)
+        x = self.backbone(x)
         
-        x = self.layer1(x)
-        
-        x = self.layer2(x)
+        # Внимание
         x = self.att1(x)
-
-        x = self.layer3(x)
         x = self.att2(x)
-
+        
+        # Пулинг и регрессия
         x = self.adaptive_pool(x)
         x = x.view(x.size(0), -1)
         return self.regressor(x)
@@ -244,29 +230,6 @@ def calculate_iou(pred_boxes, true_boxes):
     pred_boxes = torch.clamp(pred_boxes, 0, 1)
     true_boxes = torch.clamp(true_boxes, 0, 1)
     return box_iou(pred_boxes, true_boxes).diag().mean().item()
-
-class CombinedLoss(nn.Module):
-    def __init__(self, center_weight=0.5):
-        super().__init__()
-        self.center_weight = center_weight
-        self.mse = nn.MSELoss()
-        
-    def forward(self, pred, target):
-        pred = torch.clamp(pred, 0, 1)
-        target = torch.clamp(target, 0, 1)
-
-        mse_loss = self.mse(pred, target)
-        
-        pred_center_x = (pred[:, 0] + pred[:, 2]) / 2
-        pred_center_y = (pred[:, 1] + pred[:, 3]) / 2
-        target_center_x = (target[:, 0] + target[:, 2]) / 2
-        target_center_y = (target[:, 1] + target[:, 3]) / 2
-        
-        center_loss = self.mse(pred_center_x, target_center_x) + self.mse(pred_center_y, target_center_y)
-        
-        combined_loss = (1 - self.center_weight) * mse_loss + self.center_weight * center_loss
-        
-        return combined_loss
 
 def train_model():
     # Загрузка данных
@@ -281,7 +244,7 @@ def train_model():
     
     # Инициализация модели
     model = BBoxModel().to(DEVICE)
-    criterion = CombinedLoss(center_weight=0.5)
+    criterion = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=0.001)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, 
