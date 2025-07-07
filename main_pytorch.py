@@ -20,7 +20,7 @@ from tqdm import tqdm
 load_dotenv()
 
 TARGET_SIZE = (320, 320)
-BATCH_SIZE = 32
+BATCH_SIZE = 64
 EPOCHS = 40
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -207,6 +207,9 @@ class BBoxModel(nn.Module):
         # Механизм внимания
         self.attention = SpatialAttention(kernel_size=5)
         
+        # Нормализация
+        self.norm = nn.BatchNorm1d(256*4*4)
+
         # Регрессор
         self.regressor = nn.Sequential(
             nn.Linear(256*4*4, 512),
@@ -239,7 +242,8 @@ class BBoxModel(nn.Module):
         features = self.attention(p2)
         features = F.adaptive_avg_pool2d(features, (4, 4))
         features = features.view(features.size(0), -1)
-        
+        features = self.norm(features)
+
         return self.regressor(features)
     
 def calculate_iou(pred_boxes, true_boxes):
