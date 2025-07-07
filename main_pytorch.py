@@ -261,7 +261,7 @@ def train_model():
     # Инициализация модели
     model = BBoxModel().to(DEVICE)
     criterion = nn.MSELoss()
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
+    optimizer = optim.Adam(model.parameters(), lr=0.0001)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=3)
 
     best_val_loss = float('inf')
