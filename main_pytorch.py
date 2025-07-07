@@ -128,7 +128,6 @@ class BBoxDataset(Dataset):
         self.data = data
         self.target_size = target_size
         self.augment = augment
-        self.rotation_angles = [0, 90, 180, 270]
 
     def __len__(self):
         return len(self.data)
@@ -142,38 +141,6 @@ class BBoxDataset(Dataset):
         orig_w, orig_h = sample['orig_width'], sample['orig_height']
         
         if self.augment:
-            # Применение разворота
-            angle = random.choice(self.rotation_angles)
-            
-            # Матрица поворота
-            center = (orig_w / 2, orig_h / 2)
-            M = cv2.getRotationMatrix2D(center, angle, 1.0)
-            
-            # Поворот изображения
-            img = cv2.warpAffine(img, M, (orig_w, orig_h))
-            
-            # Поворот точек bounding box
-            points = np.array([
-                [bbox[0], bbox[1]],
-                [bbox[2], bbox[1]],
-                [bbox[2], bbox[3]],
-                [bbox[0], bbox[3]]
-            ])
-            
-            ones = np.ones(shape=(4, 1), dtype=np.float32)
-            points_ones = np.hstack([points, ones])
-            transformed_points = M.dot(points_ones.T).T
-            
-            x_min, y_min = np.min(transformed_points, axis=0)
-            x_max, y_max = np.max(transformed_points, axis=0)
-            bbox = [x_min, y_min, x_max, y_max]
-            
-            # Корректировка границ
-            bbox[0] = max(0, min(orig_w, bbox[0]))
-            bbox[1] = max(0, min(orig_h, bbox[1]))
-            bbox[2] = max(0, min(orig_w, bbox[2]))
-            bbox[3] = max(0, min(orig_h, bbox[3]))
-
             if random.random() > 0.5:
                 img = cv2.flip(img, 1)
                 bbox = [
@@ -373,7 +340,8 @@ def train_model():
 
 def visualize_predictions(model, test_images, target_size, device, n=5):
     model.eval()
-    for img_path in test_images[:n]:
+    selected_images = random.sample(test_images, min(n, len(test_images)))
+    for img_path in selected_images:
         try:
             # Загрузка изображения
             img = cv2.imread(img_path)
