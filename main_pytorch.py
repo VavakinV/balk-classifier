@@ -15,6 +15,8 @@ from torchvision import models, transforms
 from torch.utils.data import Dataset, DataLoader
 from torchvision.ops import box_iou, generalized_box_iou_loss
 from tqdm import tqdm
+import albumentations as A
+from albumentations.pytorch import ToTensorV2
 
 load_dotenv()
 
@@ -129,6 +131,25 @@ class BBoxDataset(Dataset):
         self.target_size = target_size
         self.augment = augment
 
+        self.base_transform = A.Compose([
+            A.Resize(target_size[0], target_size[1]),
+            A.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            ToTensorV2()
+        ], bbox_params=A.BboxParams(format='pascal_voc', label_fields=['labels']))
+        
+        self.aug_transform = A.Compose([
+            A.Resize(target_size[0], target_size[1]),
+            A.HorizontalFlip(p=0.5),
+            A.VerticalFlip(p=0.2),
+            A.RandomRotate90(p=0.3),
+            A.RandomBrightnessContrast(p=0.4),
+            A.ShiftScaleRotate(shift_limit=0.05, scale_limit=0.1, rotate_limit=15, p=0.5),
+            A.Blur(blur_limit=3, p=0.2),
+            A.CLAHE(p=0.3),
+            A.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            ToTensorV2()
+        ], bbox_params=A.BboxParams(format='pascal_voc', label_fields=['labels']))
+
     def __len__(self):
         return len(self.data)
 
@@ -138,36 +159,27 @@ class BBoxDataset(Dataset):
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         
         bbox = sample['bbox']
-        orig_w, orig_h = sample['orig_width'], sample['orig_height']
+        orig_h, orig_w = img.shape[:2], sample['orig_height']
         
-        if self.augment:
-            if random.random() > 0.5:
-                img = cv2.flip(img, 1)
-                bbox = [
-                    orig_w - bbox[2],
-                    bbox[1],
-                    orig_w - bbox[0],
-                    bbox[3]
-                ]
-            
-            alpha = random.uniform(0.8, 1.2)
-            beta = random.uniform(-30, 30)
-            img = cv2.convertScaleAbs(img, alpha=alpha, beta=beta)
-
-        img = preprocess_image(img, self.target_size)
+        transform = self.aug_transform if self.augment else self.base_transform
+        transformed = transform(
+            image=img,
+            bboxes=[bbox],
+            labels=[0]
+        )
+        
+        img_tensor = transformed['image']
+        bbox_transformed = transformed['bboxes'][0]
 
         # Нормализация координат
         bbox_norm = [
-            bbox[0] / orig_w,
-            bbox[1] / orig_h,
-            bbox[2] / orig_w,
-            bbox[3] / orig_h
+            bbox_transformed[0] / self.target_size[0],
+            bbox_transformed[1] / self.target_size[1],
+            bbox_transformed[2] / self.target_size[0],
+            bbox_transformed[3] / self.target_size[1]
         ]
         
-        return (
-            torch.FloatTensor(img.transpose(2, 0, 1)), # Исходное изображение в формате (channels, height, width)
-            torch.FloatTensor(bbox_norm) # Координаты AABB в формате [x_min, y_min, x_max, y_max]
-        )
+        return img_tensor, torch.FloatTensor(bbox_norm)
 
 class SpatialAttention(nn.Module):
     def __init__(self, kernel_size=7):
@@ -367,8 +379,12 @@ def visualize_predictions(model, test_images, target_size, device, n=5):
             display_img = img.copy()
             
             # Предобработка изображения
-            img_proc = preprocess_image(img, target_size)
-            img_tensor = torch.FloatTensor(img_proc.transpose(2, 0, 1)).unsqueeze(0).to(device)
+            transform = A.Compose([
+                A.Resize(target_size[0], target_size[1]),
+                A.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            ])
+            transformed = transform(image=img)
+            img_tensor = torch.FloatTensor(transformed["image"].transpose(2, 0, 1))
             
             # Получение предсказания
             with torch.no_grad():
