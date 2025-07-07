@@ -246,27 +246,41 @@ def calculate_iou(pred_boxes, true_boxes):
     return box_iou(pred_boxes, true_boxes).diag().mean().item()
 
 class CombinedLoss(nn.Module):
-    def __init__(self, alpha=0.7):
+    def __init__(self, alpha=0.5):
         super().__init__()
         self.alpha = alpha
-        self.mse = nn.MSELoss()
+        self.mse = nn.MSELoss(reduction='none')
         
     def forward(self, pred, target):
-        mse_loss = self.mse(pred, target)
-        
-        # IoU компонент
         pred = torch.clamp(pred, 0, 1)
         target = torch.clamp(target, 0, 1)
         
-        inter = (torch.min(pred[:,2], target[:,2]) - torch.max(pred[:,0], target[:,0])) * \
-                (torch.min(pred[:,3], target[:,3]) - torch.max(pred[:,1], target[:,1]))
-        union = (pred[:,2]-pred[:,0])*(pred[:,3]-pred[:,1]) + \
-                (target[:,2]-target[:,0])*(target[:,3]-target[:,1]) - inter
+        mse_loss = self.mse(pred, target).mean(dim=1)
         
-        iou = torch.clamp(inter / (union + 1e-6), min=0)
-        iou_loss = 1 - iou.mean()
+        def compute_iou(box1, box2):
+            
+            x_left = torch.max(box1[0], box2[0])
+            y_top = torch.max(box1[1], box2[1])
+            x_right = torch.min(box1[2], box2[2])
+            y_bottom = torch.min(box1[3], box2[3])
+            
+            intersection_area = torch.clamp(x_right - x_left, min=0) * torch.clamp(y_bottom - y_top, min=0)
+            
+            box1_area = (box1[2] - box1[0]) * (box1[3] - box1[1])
+            box2_area = (box2[2] - box2[0]) * (box2[3] - box2[1])
+            
+            union_area = box1_area + box2_area - intersection_area + 1e-6
+            
+            return intersection_area / union_area
+
+        iou = torch.stack([compute_iou(p, t) for p, t in zip(pred, target)])
+
+        iou_loss = 1.0 - iou
         
-        return self.alpha * mse_loss + (1-self.alpha) * iou_loss
+        # Комбинированная потеря
+        combined_loss = self.alpha * mse_loss + (1 - self.alpha) * iou_loss
+        
+        return combined_loss.mean()
 
 def train_model():
     # Загрузка данных
