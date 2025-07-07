@@ -246,41 +246,27 @@ def calculate_iou(pred_boxes, true_boxes):
     return box_iou(pred_boxes, true_boxes).diag().mean().item()
 
 class CombinedLoss(nn.Module):
-    def __init__(self, alpha=0.5):
+    def __init__(self, center_weight=0.5):
         super().__init__()
-        self.alpha = alpha
-        self.mse = nn.MSELoss(reduction='none')
+        self.center_weight = center_weight
+        self.mse = nn.MSELoss()
         
     def forward(self, pred, target):
         pred = torch.clamp(pred, 0, 1)
         target = torch.clamp(target, 0, 1)
-        
-        mse_loss = self.mse(pred, target).mean(dim=1)
-        
-        def compute_iou(box1, box2):
-            
-            x_left = torch.max(box1[0], box2[0])
-            y_top = torch.max(box1[1], box2[1])
-            x_right = torch.min(box1[2], box2[2])
-            y_bottom = torch.min(box1[3], box2[3])
-            
-            intersection_area = torch.clamp(x_right - x_left, min=0) * torch.clamp(y_bottom - y_top, min=0)
-            
-            box1_area = (box1[2] - box1[0]) * (box1[3] - box1[1])
-            box2_area = (box2[2] - box2[0]) * (box2[3] - box2[1])
-            
-            union_area = box1_area + box2_area - intersection_area + 1e-6
-            
-            return intersection_area / union_area
 
-        iou = torch.stack([compute_iou(p, t) for p, t in zip(pred, target)])
-
-        iou_loss = 1.0 - iou
+        mse_loss = self.mse(pred, target)
         
-        # Комбинированная потеря
-        combined_loss = self.alpha * mse_loss + (1 - self.alpha) * iou_loss
+        pred_center_x = (pred[:, 0] + pred[:, 2]) / 2
+        pred_center_y = (pred[:, 1] + pred[:, 3]) / 2
+        target_center_x = (target[:, 0] + target[:, 2]) / 2
+        target_center_y = (target[:, 1] + target[:, 3]) / 2
         
-        return combined_loss.mean()
+        center_loss = self.mse(pred_center_x, target_center_x) + self.mse(pred_center_y, target_center_y)
+        
+        combined_loss = (1 - self.center_weight) * mse_loss + self.center_weight * center_loss
+        
+        return combined_loss
 
 def train_model():
     # Загрузка данных
@@ -295,7 +281,7 @@ def train_model():
     
     # Инициализация модели
     model = BBoxModel().to(DEVICE)
-    criterion = CombinedLoss(alpha=0.7)
+    criterion = CombinedLoss(center_weight=0.5)
     optimizer = optim.Adam(model.parameters(), lr=0.001)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, 
