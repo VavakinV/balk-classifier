@@ -6,22 +6,20 @@ import cv2
 import matplotlib.pyplot as plt
 import glob
 import random
-from dotenv import load_dotenv
-from sklearn.model_selection import train_test_split
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torchvision import models, transforms
+from dotenv import load_dotenv
+from sklearn.model_selection import train_test_split
+from torchvision import models
 from torch.utils.data import Dataset, DataLoader
-from torchvision.ops import box_iou, generalized_box_iou_loss
+from torchvision.ops import box_iou
 from tqdm import tqdm
-import albumentations as A
-from albumentations.pytorch import ToTensorV2
 
 load_dotenv()
 
-TARGET_SIZE = (640, 640)
-BATCH_SIZE = 16
+TARGET_SIZE = (320, 320)
+BATCH_SIZE = 32
 EPOCHS = 40
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -131,25 +129,6 @@ class BBoxDataset(Dataset):
         self.target_size = target_size
         self.augment = augment
 
-        self.base_transform = A.Compose([
-            A.Resize(target_size[0], target_size[1]),
-            A.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-            ToTensorV2()
-        ], bbox_params=A.BboxParams(format='pascal_voc', label_fields=['labels']))
-        
-        self.aug_transform = A.Compose([
-            A.Resize(target_size[0], target_size[1]),
-            A.HorizontalFlip(p=0.5),
-            A.VerticalFlip(p=0.2),
-            A.RandomRotate90(p=0.3),
-            A.RandomBrightnessContrast(p=0.4),
-            A.ShiftScaleRotate(shift_limit=0.05, scale_limit=0.1, rotate_limit=15, p=0.5),
-            A.Blur(blur_limit=3, p=0.2),
-            A.CLAHE(p=0.3),
-            A.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-            ToTensorV2()
-        ], bbox_params=A.BboxParams(format='pascal_voc', label_fields=['labels']))
-
     def __len__(self):
         return len(self.data)
 
@@ -159,27 +138,35 @@ class BBoxDataset(Dataset):
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         
         bbox = sample['bbox']
-        orig_h, orig_w = img.shape[:2], sample['orig_height']
+        orig_w, orig_h = sample['orig_width'], sample['orig_height']
         
-        transform = self.aug_transform if self.augment else self.base_transform
-        transformed = transform(
-            image=img,
-            bboxes=[bbox],
-            labels=[0]
-        )
-        
-        img_tensor = transformed['image']
-        bbox_transformed = transformed['bboxes'][0]
+        if self.augment:
+            if random.random() > 0.5:
+                img = cv2.flip(img, 1)
+                bbox = [
+                    orig_w - bbox[2],
+                    bbox[1],
+                    orig_w - bbox[0],
+                    bbox[3]
+                ]
+            
+            alpha = random.uniform(0.8, 1.2)
+            beta = random.uniform(-30, 30)
+            img = cv2.convertScaleAbs(img, alpha=alpha, beta=beta)
 
-        # Нормализация координат
+        img = preprocess_image(img, self.target_size)
+
         bbox_norm = [
-            bbox_transformed[0] / self.target_size[0],
-            bbox_transformed[1] / self.target_size[1],
-            bbox_transformed[2] / self.target_size[0],
-            bbox_transformed[3] / self.target_size[1]
+            bbox[0] / orig_w,
+            bbox[1] / orig_h,
+            bbox[2] / orig_w,
+            bbox[3] / orig_h
         ]
         
-        return img_tensor, torch.FloatTensor(bbox_norm)
+        return (
+            torch.FloatTensor(img.transpose(2, 0, 1)), # Исходное изображение в формате (channels, height, width)
+            torch.FloatTensor(bbox_norm) # Координаты AABB в формате [x_min, y_min, x_max, y_max]
+        )
 
 class SpatialAttention(nn.Module):
     def __init__(self, kernel_size=7):
@@ -190,7 +177,6 @@ class SpatialAttention(nn.Module):
             nn.Conv2d(8, 1, kernel_size=kernel_size, padding=kernel_size//2, bias=False)
         )
         self.sigmoid = nn.Sigmoid()
-        # Инициализация весов
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
                 nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
@@ -257,9 +243,7 @@ def calculate_iou(pred_boxes, true_boxes):
     true_boxes = torch.clamp(true_boxes, 0, 1)
     return box_iou(pred_boxes, true_boxes).diag().mean().item()
 
-
 def train_model():
-    # Загрузка данных
     data = load_data(ANNOTATIONS_PATH, TRAIN_IMAGES_PATH)
     train_data, val_data = train_test_split(data, test_size=0.2, random_state=42)
 
@@ -268,8 +252,7 @@ def train_model():
 
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE)
-    
-    # Инициализация модели
+
     model = BBoxModel().to(DEVICE)
     criterion = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=0.001)
@@ -308,7 +291,6 @@ def train_model():
         history['train_loss'].append(train_loss)
         history['train_iou'].append(train_iou)
         
-        # Валидация
         model.eval()
         val_loss = 0.0
         val_iou = 0.0
@@ -330,8 +312,7 @@ def train_model():
         history['val_iou'].append(val_iou)
         
         scheduler.step(val_loss)
-        
-        # Вывод информации о текущем learning rate
+
         current_lr = optimizer.param_groups[0]['lr']
         
         print(f"Epoch {epoch+1}/{EPOCHS} | "
@@ -344,7 +325,6 @@ def train_model():
             torch.save(model.state_dict(), "best_model.pth")
             print("Model saved!")
     
-    # Построение графиков обучения
     plt.figure(figsize=(12, 5))
     plt.subplot(1, 2, 1)
     plt.plot(history['train_loss'], label='Train Loss')
@@ -360,7 +340,6 @@ def train_model():
 
     plt.show()
     
-    # Загрузка лучшей модели
     model.load_state_dict(torch.load("best_model.pth"))
     return model
 
@@ -379,28 +358,13 @@ def visualize_predictions(model, test_images, target_size, device, n=5):
             display_img = img.copy()
             
             # Предобработка изображения
-            transform = A.Compose([
-                A.Resize(target_size[0], target_size[1]),
-                A.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-            ])
-            transformed = transform(image=img)
-            img_tensor = torch.FloatTensor(transformed["image"].transpose(2, 0, 1))
+            img_proc = preprocess_image(img, target_size)
+            img_tensor = torch.FloatTensor(img_proc.transpose(2, 0, 1)).unsqueeze(0).to(device)
             
             # Получение предсказания
             with torch.no_grad():
                 pred = model(img_tensor)
                 pred_np = pred.cpu().numpy().squeeze()
-            
-            # Проверка формы выходных данных
-            print(f"Debug - pred_np shape: {pred_np.shape}")  # Отладочная информация
-            
-            if pred_np.size == 4:  # Если это плоский массив из 4 элементов
-                pred_bbox = pred_np
-            elif pred_np.shape[-1] == 4:  # Если это массив с последней размерностью 4
-                pred_bbox = pred_np[0] if len(pred_np.shape) > 1 else pred_np
-            else:
-                print(f"Error: Unexpected prediction shape {pred_np.shape} for image {img_path}")
-                continue
             
             # Преобразование координат
             try:
