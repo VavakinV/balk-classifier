@@ -4,7 +4,6 @@ import numpy as np
 import pandas as pd
 import cv2
 import matplotlib.pyplot as plt
-import glob
 import random
 import torch
 import torch.nn as nn
@@ -233,10 +232,86 @@ class BBoxModel(nn.Module):
         x = x.view(x.size(0), -1)
         return self.regressor(x)
     
+class IoULoss(nn.Module):
+    def __init__(self, eps=1e-6):
+        super(IoULoss, self).__init__()
+        self.eps = eps
+        
+    def forward(self, pred, target):
+        """
+        Вычисляет IoU Loss между предсказанными и целевыми bounding box.
+        
+        Формат bbox: [x_min, y_min, x_max, y_max]
+        Координаты нормализованы в диапазоне [0, 1]
+        """
+        # Гарантируем, что координаты валидны
+        pred = torch.clamp(pred, 0, 1)
+        target = torch.clamp(target, 0, 1)
+        
+        # Разделяем координаты
+        pred_x1, pred_y1, pred_x2, pred_y2 = pred[:, 0], pred[:, 1], pred[:, 2], pred[:, 3]
+        target_x1, target_y1, target_x2, target_y2 = target[:, 0], target[:, 1], target[:, 2], target[:, 3]
+        
+        # Вычисляем координаты пересечения
+        inter_x1 = torch.max(pred_x1, target_x1)
+        inter_y1 = torch.max(pred_y1, target_y1)
+        inter_x2 = torch.min(pred_x2, target_x2)
+        inter_y2 = torch.min(pred_y2, target_y2)
+        
+        # Площадь пересечения (с защитой от отрицательных значений)
+        inter_width = torch.clamp(inter_x2 - inter_x1, min=0)
+        inter_height = torch.clamp(inter_y2 - inter_y1, min=0)
+        intersection = inter_width * inter_height
+        
+        # Площади прямоугольников
+        pred_area = (pred_x2 - pred_x1) * (pred_y2 - pred_y1)
+        target_area = (target_x2 - target_x1) * (target_y2 - target_y1)
+        
+        # Площадь объединения
+        union = pred_area + target_area - intersection + self.eps
+        
+        # IoU
+        iou = intersection / union
+        
+        # IoU Loss = 1 - IoU
+        loss = 1.0 - iou
+        
+        return loss.mean()
+    
 def calculate_iou(pred_boxes, true_boxes):
+    """
+    Вычисляет средний IoU для батча.
+    Улучшенная и оптимизированная версия.
+    """
+    # Гарантируем валидные значения
     pred_boxes = torch.clamp(pred_boxes, 0, 1)
     true_boxes = torch.clamp(true_boxes, 0, 1)
-    return box_iou(pred_boxes, true_boxes).diag().mean().item()
+    
+    # Разделяем координаты
+    pred_x1, pred_y1, pred_x2, pred_y2 = pred_boxes[:, 0], pred_boxes[:, 1], pred_boxes[:, 2], pred_boxes[:, 3]
+    true_x1, true_y1, true_x2, true_y2 = true_boxes[:, 0], true_boxes[:, 1], true_boxes[:, 2], true_boxes[:, 3]
+    
+    # Пересечение
+    inter_x1 = torch.max(pred_x1, true_x1)
+    inter_y1 = torch.max(pred_y1, true_y1)
+    inter_x2 = torch.min(pred_x2, true_x2)
+    inter_y2 = torch.min(pred_y2, true_y2)
+    
+    inter_width = torch.clamp(inter_x2 - inter_x1, min=0)
+    inter_height = torch.clamp(inter_y2 - inter_y1, min=0)
+    intersection = inter_width * inter_height
+    
+    # Площади
+    pred_area = (pred_x2 - pred_x1) * (pred_y2 - pred_y1)
+    true_area = (true_x2 - true_x1) * (true_y2 - true_y1)
+    
+    # Объединение
+    union = pred_area + true_area - intersection + 1e-6
+    
+    # IoU для каждого элемента батча
+    iou = intersection / union
+    
+    return iou.mean().item()
 
 def train_model():
     data = load_data(TRAIN_ANNOTATIONS_PATH, TRAIN_IMAGES_PATH)
@@ -249,7 +324,7 @@ def train_model():
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE)
 
     model = BBoxModel().to(DEVICE)
-    criterion = nn.MSELoss()
+    criterion = IoULoss()
     optimizer = optim.Adam(model.parameters(), lr=0.001)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, 
