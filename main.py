@@ -196,7 +196,6 @@ class BBoxModel(nn.Module):
         self.layer1 = resnet.layer1
         self.layer2 = resnet.layer2
         self.layer3 = resnet.layer3
-        self.layer4 = resnet.layer4 
         
         # Блоки внимания после layer2 и layer3
         self.att1 = SpatialAttention(kernel_size=5)
@@ -209,20 +208,12 @@ class BBoxModel(nn.Module):
         self.regressor = nn.Sequential(
             nn.Linear(512*4*4, 512),
             nn.ReLU(),
-            nn.BatchNorm1d(512),
             nn.Dropout(0.4),
             nn.Linear(512, 256),
             nn.ReLU(),
-            nn.BatchNorm1d(256),
             nn.Linear(256, 4),
             nn.Sigmoid()
         )
-
-        for m in self.regressor.modules():
-            if isinstance(m, nn.Linear):
-                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0)
 
     def forward(self, x):
         x = self.conv1(x)
@@ -237,7 +228,6 @@ class BBoxModel(nn.Module):
 
         x = self.layer3(x)
         x = self.att2(x)
-        x = self.layer4(x)
         x = self.att3(x) 
 
         x = self.adaptive_pool(x)
