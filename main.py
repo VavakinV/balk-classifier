@@ -232,9 +232,11 @@ class BBoxModel(nn.Module):
         x = x.view(x.size(0), -1)
         return self.regressor(x)
     
-class IoULoss(nn.Module):
-    def __init__(self, eps=1e-6):
-        super(IoULoss, self).__init__()
+class CenterIoULoss(nn.Module):
+    def __init__(self, iou_weight=0.5, eps=1e-6):
+        super(CenterIoULoss, self).__init__()
+        self.iou_weight = iou_weight
+        self.center_weight = 1.0 - iou_weight
         self.eps = eps
         
     def forward(self, pred, target):
@@ -274,9 +276,24 @@ class IoULoss(nn.Module):
         iou = intersection / union
         
         # IoU Loss = 1 - IoU
-        loss = 1.0 - iou
+        iou_loss = 1.0 - iou
         
-        return loss.mean()
+        pred_center_x = (pred_x1 + pred_x2) / 2
+        pred_center_y = (pred_y1 + pred_y2) / 2
+        target_center_x = (target_x1 + target_x2) / 2
+        target_center_y = (target_y1 + target_y2) / 2
+        
+        # Евклидово расстояние (нормализованное)
+        center_distance = torch.sqrt(
+            (pred_center_x - target_center_x)**2 + 
+            (pred_center_y - target_center_y)**2
+        )
+
+        normalized_distance = center_distance / torch.sqrt(torch.tensor(2.0, device=pred.device))
+
+        combined_loss = self.iou_weight * iou_loss + self.center_weight * normalized_distance
+
+        return combined_loss.mean()
     
 def calculate_iou(pred_boxes, true_boxes):
     """
@@ -324,7 +341,7 @@ def train_model():
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE)
 
     model = BBoxModel().to(DEVICE)
-    criterion = IoULoss()
+    criterion = CenterIoULoss(iou_weight=0.5)
     optimizer = optim.Adam(model.parameters(), lr=0.001)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, 
