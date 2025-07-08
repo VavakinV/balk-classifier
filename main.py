@@ -232,68 +232,60 @@ class BBoxModel(nn.Module):
         x = x.view(x.size(0), -1)
         return self.regressor(x)
     
-class CenterIoULoss(nn.Module):
-    def __init__(self, iou_weight=0.5, eps=1e-6):
-        super(CenterIoULoss, self).__init__()
-        self.iou_weight = iou_weight
-        self.center_weight = 1.0 - iou_weight
+class CIoULoss(nn.Module):
+    def __init__(self, eps=1e-6):
+        super(CIoULoss, self).__init__()
         self.eps = eps
         
     def forward(self, pred, target):
-        """
-        Вычисляет IoU Loss между предсказанными и целевыми bounding box.
-        
-        Формат bbox: [x_min, y_min, x_max, y_max]
-        Координаты нормализованы в диапазоне [0, 1]
-        """
-        # Гарантируем, что координаты валидны
         pred = torch.clamp(pred, 0, 1)
         target = torch.clamp(target, 0, 1)
         
-        # Разделяем координаты
         pred_x1, pred_y1, pred_x2, pred_y2 = pred[:, 0], pred[:, 1], pred[:, 2], pred[:, 3]
         target_x1, target_y1, target_x2, target_y2 = target[:, 0], target[:, 1], target[:, 2], target[:, 3]
         
-        # Вычисляем координаты пересечения
+        # Intersection area
         inter_x1 = torch.max(pred_x1, target_x1)
         inter_y1 = torch.max(pred_y1, target_y1)
         inter_x2 = torch.min(pred_x2, target_x2)
         inter_y2 = torch.min(pred_y2, target_y2)
-        
-        # Площадь пересечения (с защитой от отрицательных значений)
         inter_width = torch.clamp(inter_x2 - inter_x1, min=0)
         inter_height = torch.clamp(inter_y2 - inter_y1, min=0)
         intersection = inter_width * inter_height
         
-        # Площади прямоугольников
+        # Union area
         pred_area = (pred_x2 - pred_x1) * (pred_y2 - pred_y1)
         target_area = (target_x2 - target_x1) * (target_y2 - target_y1)
-        
-        # Площадь объединения
         union = pred_area + target_area - intersection + self.eps
-        
-        # IoU
         iou = intersection / union
         
-        # IoU Loss = 1 - IoU
-        iou_loss = 1.0 - iou
-        
+        # Center distance
         pred_center_x = (pred_x1 + pred_x2) / 2
         pred_center_y = (pred_y1 + pred_y2) / 2
         target_center_x = (target_x1 + target_x2) / 2
         target_center_y = (target_y1 + target_y2) / 2
+        center_distance_sq = (pred_center_x - target_center_x)**2 + (pred_center_y - target_center_y)**2
         
-        # Евклидово расстояние (нормализованное)
-        center_distance = torch.sqrt(
-            (pred_center_x - target_center_x)**2 + 
-            (pred_center_y - target_center_y)**2
-        )
-
-        normalized_distance = center_distance / torch.sqrt(torch.tensor(2.0, device=pred.device))
-
-        combined_loss = self.iou_weight * iou_loss + self.center_weight * normalized_distance
-
-        return combined_loss.mean()
+        # Diagonal distance of enclosing box
+        enclosing_x1 = torch.min(pred_x1, target_x1)
+        enclosing_y1 = torch.min(pred_y1, target_y1)
+        enclosing_x2 = torch.max(pred_x2, target_x2)
+        enclosing_y2 = torch.max(pred_y2, target_y2)
+        diagonal_distance_sq = (enclosing_x2 - enclosing_x1)**2 + (enclosing_y2 - enclosing_y1)**2
+        
+        # Aspect ratio
+        pred_w = pred_x2 - pred_x1
+        pred_h = pred_y2 - pred_y1
+        target_w = target_x2 - target_x1
+        target_h = target_y2 - target_y1
+        v = (4 / (np.pi ** 2)) * torch.pow(torch.atan(target_w/target_h) - torch.atan(pred_w/pred_h), 2)
+        with torch.no_grad():
+            alpha = v / (1 - iou + v + self.eps)
+        
+        # CIoU calculation
+        ciou = iou - (center_distance_sq / diagonal_distance_sq) - alpha * v
+        loss = 1 - ciou
+        return loss.mean()
     
 def calculate_iou(pred_boxes, true_boxes):
     """
@@ -341,7 +333,7 @@ def train_model():
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE)
 
     model = BBoxModel().to(DEVICE)
-    criterion = CenterIoULoss(iou_weight=0.5)
+    criterion = CIoULoss()
     optimizer = optim.Adam(model.parameters(), lr=0.001)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, 
