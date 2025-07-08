@@ -23,15 +23,10 @@ BATCH_SIZE = 32
 EPOCHS = 40
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-ANNOTATIONS_PATH = os.getenv("ANNOTATIONS_PATH")
+TRAIN_ANNOTATIONS_PATH = os.getenv("TRAIN_ANNOTATIONS_PATH")
+TEST_ANNOTATIONS_PATH = os.getenv("TEST_ANNOTATIONS_PATH")
 TRAIN_IMAGES_PATH = os.getenv("TRAIN_IMAGES_PATH")
-TEST_DIRS=[
-        './dataset/test/altai',
-        './dataset/test/begickaya',
-        './dataset/test/promlit',
-        './dataset/test/ruzhimmash',
-        './dataset/test/tihvin'
-    ]
+TEST_IMAGES_PATH = os.getenv("TEST_IMAGES_PATH")
 
 def rotated_rect_to_aabb(center_x, center_y, width, height, rotation_degrees):
     """Преобразование rotated rectangle в axis-aligned bounding box (AABB)"""
@@ -244,7 +239,7 @@ def calculate_iou(pred_boxes, true_boxes):
     return box_iou(pred_boxes, true_boxes).diag().mean().item()
 
 def train_model():
-    data = load_data(ANNOTATIONS_PATH, TRAIN_IMAGES_PATH)
+    data = load_data(TRAIN_ANNOTATIONS_PATH, TRAIN_IMAGES_PATH)
     train_data, val_data = train_test_split(data, test_size=0.2, random_state=42)
 
     train_dataset = BBoxDataset(train_data, TARGET_SIZE, augment=True)
@@ -343,15 +338,34 @@ def train_model():
     model.load_state_dict(torch.load("best_model.pth"))
     return model
 
-def visualize_predictions(model, test_images, target_size, device, n=5):
+def calculate_test_iou(model, test_data, device):
+    """Вычисление средней IoU для тестового набора"""
     model.eval()
-    selected_images = random.sample(test_images, min(n, len(test_images)))
-    for img_path in selected_images:
+    ious = []
+    test_loader = DataLoader(BBoxDataset(test_data, TARGET_SIZE), batch_size=32, shuffle=False)
+    
+    with torch.no_grad():
+        for images, targets in tqdm(test_loader, desc="Calculating test IoU"):
+            images = images.to(device)
+            targets = targets.to(device)
+            
+            outputs = model(images)
+            batch_iou = box_iou(outputs, targets).diag()
+            ious.extend(batch_iou.cpu().numpy())
+    
+    return np.mean(ious)
+
+def visualize_test_predictions(model, test_data, target_size, device, n=5):
+    """Визуализация предсказаний на тестовых данных с фактическими bbox"""
+    model.eval()
+    selected_samples = random.sample(test_data, min(n, len(test_data)))
+    
+    for sample in selected_samples:
         try:
             # Загрузка изображения
-            img = cv2.imread(img_path)
+            img = cv2.imread(sample['img_path'])
             if img is None:
-                print(f"Warning: Could not read image {img_path}")
+                print(f"Warning: Could not read image {sample['img_path']}")
                 continue
                 
             orig_h, orig_w = img.shape[:2]
@@ -366,50 +380,69 @@ def visualize_predictions(model, test_images, target_size, device, n=5):
                 pred = model(img_tensor)
                 pred_np = pred.cpu().numpy().squeeze()
             
-            # Преобразование координат
+            # Преобразование координат предсказания
             try:
-                x_min = int(pred_np[0] * orig_w)
-                y_min = int(pred_np[1] * orig_h)
-                x_max = int(pred_np[2] * orig_w)
-                y_max = int(pred_np[3] * orig_h)
+                x_min_pred = int(pred_np[0] * orig_w)
+                y_min_pred = int(pred_np[1] * orig_h)
+                x_max_pred = int(pred_np[2] * orig_w)
+                y_max_pred = int(pred_np[3] * orig_h)
             except Exception as e:
-                print(f"Error converting coordinates for image {img_path}: {str(e)}")
+                print(f"Error converting coordinates for image {sample['img_path']}: {str(e)}")
                 continue
             
             # Проверка валидности bounding box
-            x_min, y_min = max(0, x_min), max(0, y_min)
-            x_max, y_max = min(orig_w, x_max), min(orig_h, y_max)
+            x_min_pred = max(0, min(orig_w, x_min_pred))
+            y_min_pred = max(0, min(orig_h, y_min_pred))
+            x_max_pred = max(0, min(orig_w, x_max_pred))
+            y_max_pred = max(0, min(orig_h, y_max_pred))
 
-            if x_min >= x_max or y_min >= y_max:
-                print(f"Warning: Invalid bbox coordinates for image {img_path}")
+            if x_min_pred >= x_max_pred or y_min_pred >= y_max_pred:
+                print(f"Warning: Invalid predicted bbox coordinates for image {sample['img_path']}")
                 continue
             
-            # Отрисовка и отображение
-            cv2.rectangle(display_img, (x_min, y_min), (x_max, y_max), (0, 255, 0), 3)
+            # Фактический bounding box
+            true_bbox = sample['bbox']
+            x_min_true = int(true_bbox[0])
+            y_min_true = int(true_bbox[1])
+            x_max_true = int(true_bbox[2])
+            y_max_true = int(true_bbox[3])
             
+            # Расчет IoU для этого изображения
+            pred_box = torch.tensor([[x_min_pred, y_min_pred, x_max_pred, y_max_pred]], dtype=torch.float)
+            true_box = torch.tensor([[x_min_true, y_min_true, x_max_true, y_max_true]], dtype=torch.float)
+            iou = box_iou(pred_box, true_box).item()
+            
+            # Отрисовка
+            # 1. Фактический bbox (красный)
+            cv2.rectangle(display_img, (x_min_true, y_min_true), (x_max_true, y_max_true), (0, 0, 255), 3)
+            # 2. Предсказанный bbox (зеленый)
+            cv2.rectangle(display_img, (x_min_pred, y_min_pred), (x_max_pred, y_max_pred), (0, 255, 0), 3)
+            
+            # Добавление текста с IoU
+            cv2.putText(display_img, f"IoU: {iou:.2f}", (10, 30), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv2.LINE_AA)
+            
+            # Отображение
             plt.figure(figsize=(12, 8))
             plt.imshow(cv2.cvtColor(display_img, cv2.COLOR_BGR2RGB))
             plt.axis('off')
-            plt.title(os.path.basename(img_path))
+            plt.title(os.path.basename(sample['img_path']))
             plt.show()
             
         except Exception as e:
-            print(f"Error processing image {img_path}: {str(e)}")
-
-def collect_test_images(test_dirs):
-    test_images = []
-    for directory in test_dirs:
-        test_images.extend(glob.glob(os.path.join(directory, '*.jpg')))
-        test_images.extend(glob.glob(os.path.join(directory, '*.png')))
-    return test_images
+            print(f"Error processing image {sample['img_path']}: {str(e)}")
 
 if __name__ == "__main__":
     # Обучение модели
     trained_model = train_model().to(DEVICE)
     
-    # Сбор тестовых изображений
-    test_images = collect_test_images(TEST_DIRS)
-    print(f"Found {len(test_images)} test images")
+    # Загрузка тестовых данных
+    test_data = load_data(TEST_ANNOTATIONS_PATH, TEST_IMAGES_PATH)
+    print(f"Loaded {len(test_data)} test samples")
+    
+    # Расчет средней IoU для тестового набора
+    test_iou = calculate_test_iou(trained_model, test_data, DEVICE)
+    print(f"Mean IoU on test set: {test_iou:.4f}")
     
     # Визуализация результатов
-    visualize_predictions(trained_model, test_images, TARGET_SIZE, DEVICE, n=10)
+    visualize_test_predictions(trained_model, test_data, TARGET_SIZE, DEVICE, n=10)
