@@ -207,7 +207,7 @@ class BBoxModel(nn.Module):
         self.adaptive_pool = nn.AdaptiveAvgPool2d((4, 4))
 
         self.regressor = nn.Sequential(
-            nn.Linear(256*4*4, 512),
+            nn.Linear(512*4*4, 512),
             nn.ReLU(),
             nn.BatchNorm1d(512),
             nn.Dropout(0.4),
