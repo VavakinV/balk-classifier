@@ -14,7 +14,7 @@ from torchvision.ops import box_iou
 
 load_dotenv()
 
-TARGET_SIZE = (400, 400)
+TARGET_SIZE = (320, 320)
 BATCH_SIZE = 32
 EPOCHS = 100
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
