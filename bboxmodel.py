@@ -44,10 +44,10 @@ class BBoxModel(nn.Module):
         self.att3 = SpatialAttention(kernel_size=7)
         
         # Адаптивный пулинг
-        self.adaptive_pool = nn.AdaptiveAvgPool2d((7, 7))
+        self.adaptive_pool = nn.AdaptiveAvgPool2d((4, 4))
 
         self.regressor = nn.Sequential(
-            nn.Linear(256*7*7, 512),
+            nn.Linear(256*4*4, 512),
             nn.ReLU(),
             nn.Dropout(0.4),
             nn.Linear(512, 256),
