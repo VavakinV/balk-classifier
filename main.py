@@ -9,7 +9,7 @@ load_dotenv()
 
 TARGET_SIZE = (320, 320)
 BATCH_SIZE = 32
-EPOCHS = 100
+EPOCHS = 120
 DEVICE = device('cuda' if cuda.is_available() else 'cpu')
 
 TRAIN_ANNOTATIONS_PATH = os.getenv("TRAIN_ANNOTATIONS_PATH")

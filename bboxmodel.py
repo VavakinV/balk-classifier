@@ -27,7 +27,7 @@ class SpatialAttention(nn.Module):
 class BBoxModel(nn.Module):
     def __init__(self):
         super(BBoxModel, self).__init__()
-        resnet = models.resnet18(pretrained=True)
+        resnet = models.resnet34(pretrained=True)
         
         self.conv1 = resnet.conv1
         self.bn1 = resnet.bn1
