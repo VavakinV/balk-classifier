@@ -7,7 +7,7 @@ from bboxvisualization import visualize_test_predictions
 
 load_dotenv()
 
-TARGET_SIZE = (320, 320)
+TARGET_SIZE = (400, 400)
 BATCH_SIZE = 32
 EPOCHS = 100
 DEVICE = device('cuda' if cuda.is_available() else 'cpu')
