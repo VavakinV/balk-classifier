@@ -1,9 +1,8 @@
 import os
 from torch import device, cuda
 from dotenv import load_dotenv
-from bboxtrainmodel import train_model
+from bboxtrainmodel import train_model, calculate_test_iou
 from loaders import load_data
-from bboxtrainmodel import calculate_test_iou
 from bboxvisualization import visualize_test_predictions
 
 load_dotenv()

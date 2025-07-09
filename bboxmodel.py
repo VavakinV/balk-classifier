@@ -27,7 +27,7 @@ class SpatialAttention(nn.Module):
 class BBoxModel(nn.Module):
     def __init__(self):
         super(BBoxModel, self).__init__()
-        resnet = models.resnet18(pretrained=True)
+        resnet = models.resnet34(pretrained=True)
         
         self.conv1 = resnet.conv1
         self.bn1 = resnet.bn1
@@ -36,8 +36,9 @@ class BBoxModel(nn.Module):
         self.layer1 = resnet.layer1
         self.layer2 = resnet.layer2
         self.layer3 = resnet.layer3
+        self.layer4 = resnet.layer4
         
-        # Блоки внимания после layer2 и layer3
+        # Блоки внимания
         self.att1 = SpatialAttention(kernel_size=5)
         self.att2 = SpatialAttention(kernel_size=9)
         self.att3 = SpatialAttention(kernel_size=7)
