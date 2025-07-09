@@ -8,7 +8,7 @@ from loaders import load_data
 from sklearn.model_selection import train_test_split
 from bboxdataset import BBoxDataset
 from torch.utils.data import DataLoader
-from bboxmodel import BBoxModel, CenterIoULoss, calculate_iou
+from bboxmodel import BBoxModel, CenterIoULoss
 from tqdm import tqdm
 from torchvision.ops import box_iou
 
@@ -23,6 +23,41 @@ TRAIN_ANNOTATIONS_PATH = os.getenv("TRAIN_ANNOTATIONS_PATH")
 TEST_ANNOTATIONS_PATH = os.getenv("TEST_ANNOTATIONS_PATH")
 TRAIN_IMAGES_PATH = os.getenv("TRAIN_IMAGES_PATH")
 TEST_IMAGES_PATH = os.getenv("TEST_IMAGES_PATH")
+
+def calculate_iou(pred_boxes, true_boxes):
+    """
+    Вычисляет средний IoU для батча.
+    Улучшенная и оптимизированная версия.
+    """
+    # Гарантируем валидные значения
+    pred_boxes = torch.clamp(pred_boxes, 0, 1)
+    true_boxes = torch.clamp(true_boxes, 0, 1)
+    
+    # Разделяем координаты
+    pred_x1, pred_y1, pred_x2, pred_y2 = pred_boxes[:, 0], pred_boxes[:, 1], pred_boxes[:, 2], pred_boxes[:, 3]
+    true_x1, true_y1, true_x2, true_y2 = true_boxes[:, 0], true_boxes[:, 1], true_boxes[:, 2], true_boxes[:, 3]
+    
+    # Пересечение
+    inter_x1 = torch.max(pred_x1, true_x1)
+    inter_y1 = torch.max(pred_y1, true_y1)
+    inter_x2 = torch.min(pred_x2, true_x2)
+    inter_y2 = torch.min(pred_y2, true_y2)
+    
+    inter_width = torch.clamp(inter_x2 - inter_x1, min=0)
+    inter_height = torch.clamp(inter_y2 - inter_y1, min=0)
+    intersection = inter_width * inter_height
+    
+    # Площади
+    pred_area = (pred_x2 - pred_x1) * (pred_y2 - pred_y1)
+    true_area = (true_x2 - true_x1) * (true_y2 - true_y1)
+    
+    # Объединение
+    union = pred_area + true_area - intersection + 1e-6
+    
+    # IoU для каждого элемента батча
+    iou = intersection / union
+    
+    return iou.mean().item()
 
 def train_model():
     data = load_data(TRAIN_ANNOTATIONS_PATH, TRAIN_IMAGES_PATH)
