@@ -6,9 +6,9 @@ import numpy as np
 from dotenv import load_dotenv
 from loaders import load_data
 from sklearn.model_selection import train_test_split
-from bboxdataset import BBoxDataset
+from bbox_dataset import BBoxDataset
 from torch.utils.data import DataLoader
-from bboxmodel import BBoxModel, CenterIoULoss
+from bbox_model import BBoxModel, CenterIoULoss
 from tqdm import tqdm
 from torchvision.ops import box_iou
 

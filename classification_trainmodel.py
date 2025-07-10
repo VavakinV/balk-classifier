@@ -2,8 +2,8 @@ import os
 import torch
 import torch.optim as optim
 from torch.utils.data import DataLoader
-from classificationmodel import ProducerClassifier
-from classificationdataset import ProducerDataset
+from classification_model import ProducerClassifier
+from classification_dataset import ProducerDataset
 from torchvision import transforms
 import matplotlib.pyplot as plt
 from tqdm import tqdm
