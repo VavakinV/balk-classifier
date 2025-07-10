@@ -7,3 +7,8 @@
 ~*
 
 __pycache__
+
+/test_cropped
+/train_cropped
+test_classification.csv
+train_classification.csv
