@@ -15,7 +15,7 @@ TRAIN_ANNOTATIONS_PATH = os.getenv("TRAIN_ANNOTATIONS_PATH")
 
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 BATCH_SIZE = 32
-EPOCHS = 50
+EPOCHS = 100
 LR = 0.001
 THRESHOLD = 0.5
 

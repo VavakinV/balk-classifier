@@ -1,8 +1,12 @@
-from train_all_models import train_all_models
+from train_models import train_models
 from fullmodel_test import run_tests
 
 if __name__ == "__main__":
-    train_models = input("Train models?\n('No' -> Enter, 'Yes' -> <any key>+Enter): ")
-    if train_models:
-        train_all_models()
+    choice = int(input("Which model to train?\n1 -> Only bbox\n2 -> Only classification\n3 -> Both\n0 -> None\nChoose: "))
+    try:
+        if train_models:
+            train_models(choice)
+    except:
+        print("Invalid input")
+        exit
     run_tests()

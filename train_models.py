@@ -19,12 +19,14 @@ TEST_ANNOTATIONS_PATH = os.getenv("TEST_ANNOTATIONS_PATH")
 TRAIN_IMAGES_PATH = os.getenv("TRAIN_IMAGES_PATH")
 TEST_IMAGES_PATH = os.getenv("TEST_IMAGES_PATH")
 
-def train_all_models():
+def train_all_models(choice=0):
     # Обучение моделей
     # Обученные модели сохраняются в файлах
-    bbox_model = train_bbox_model().to(DEVICE)
-    classification_model_cropped = train_classification_model_cropped()
-    classification_model_full = train_classification_model_full()
-    
+    if choice == 1 or choice == 3:
+        bbox_model = train_bbox_model().to(DEVICE)
+    if choice == 2 or choice == 3:
+        classification_model_cropped = train_classification_model_cropped()
+        classification_model_full = train_classification_model_full()
+    return
     # Визуализация первой модели
     # visualize_test_predictions(trained_model, test_data, TARGET_SIZE, DEVICE, n=10)
