@@ -12,10 +12,9 @@ def train_models(choice=0):
     # Обученные модели сохраняются в файлах
     if choice == 1 or choice == 3:
         bbox_model = train_bbox_model().to(DEVICE)
-
-    prepare_data()
     
     if choice == 2 or choice == 3:
+        prepare_data()
         classification_model_cropped = train_classification_model_cropped()
         classification_model_full = train_classification_model_full()
     return
