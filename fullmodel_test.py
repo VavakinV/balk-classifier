@@ -11,7 +11,8 @@ load_dotenv()
 TEST_IMAGES_PATH = os.getenv("TEST_IMAGES_PATH")
 TEST_ANNOTATIONS_PATH = os.getenv("TEST_ANNOTATIONS_PATH")
 DETECTOR_MODEL_PATH = "best_model.pth"
-CLASSIFIER_MODEL_PATH = "producer_classifier.pth"
+CLASSIFIER_CROPPED_PATH = "producer_classifier.pth"
+CLASSIFIER_FULL_PATH = "producer_classifier_full.pth"
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 def load_test_data(annotations_path, images_path):
@@ -30,7 +31,9 @@ def evaluate_pipeline(test_data):
     """Оценивает точность полного пайплайна на тестовых данных"""
     pipeline = FullPipeline(
         detector_path=DETECTOR_MODEL_PATH,
-        classifier_path=CLASSIFIER_MODEL_PATH,
+        classifier_cropped_path=CLASSIFIER_CROPPED_PATH,
+        classifier_full_path=CLASSIFIER_FULL_PATH,
+        threshold=0.5,
         device=DEVICE
     )
     
@@ -100,7 +103,7 @@ def print_results(eval_results):
             print(f"{eval_results['confusion_matrix'][true].get(pred, 0):<10}", end="")
         print()
 
-if __name__ == "__main__":
+def run_tests():
     test_data = load_test_data(TEST_ANNOTATIONS_PATH, TEST_IMAGES_PATH)
     print(f"Loaded {len(test_data)} test images")
     

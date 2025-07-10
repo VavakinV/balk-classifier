@@ -59,7 +59,7 @@ def calculate_iou(pred_boxes, true_boxes):
     
     return iou.mean().item()
 
-def train_model():
+def train_model(visualize=False):
     data = load_data(TRAIN_ANNOTATIONS_PATH, TRAIN_IMAGES_PATH)
     train_data, val_data = train_test_split(data, test_size=0.2, random_state=42)
 
@@ -141,20 +141,21 @@ def train_model():
             torch.save(model.state_dict(), "best_model.pth")
             print("Model saved!")
     
-    plt.figure(figsize=(12, 5))
-    plt.subplot(1, 2, 1)
-    plt.plot(history['train_loss'], label='Train Loss')
-    plt.plot(history['val_loss'], label='Val Loss')
-    plt.title('Loss during training')
-    plt.legend()
-    
-    plt.subplot(1, 2, 2)
-    plt.plot(history['train_iou'], label='Train IoU')
-    plt.plot(history['val_iou'], label='Val IoU')
-    plt.title('IoU during training')
-    plt.legend()
+    if visualize:
+        plt.figure(figsize=(12, 5))
+        plt.subplot(1, 2, 1)
+        plt.plot(history['train_loss'], label='Train Loss')
+        plt.plot(history['val_loss'], label='Val Loss')
+        plt.title('Loss during training')
+        plt.legend()
+        
+        plt.subplot(1, 2, 2)
+        plt.plot(history['train_iou'], label='Train IoU')
+        plt.plot(history['val_iou'], label='Val IoU')
+        plt.title('IoU during training')
+        plt.legend()
 
-    plt.show()
+        plt.show()
     
     model.load_state_dict(torch.load("best_model.pth"))
     return model
