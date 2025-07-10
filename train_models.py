@@ -11,7 +11,7 @@ def train_models(choice=0):
     # Обучение моделей
     # Обученные модели сохраняются в файлах
     if choice == 1 or choice == 3:
-        bbox_model = train_bbox_model().to(DEVICE)
+        bbox_model = train_bbox_model()
 
     prepare_data()
     
