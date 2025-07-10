@@ -7,7 +7,6 @@ from tqdm import tqdm
 from dotenv import load_dotenv
 from torchvision import transforms
 from bbox_model import BBoxModel
-from PIL import Image
 
 load_dotenv()
 
@@ -96,9 +95,7 @@ def process_annotations(annotations_path, images_path, output_dir, output_csv, d
 
 def prepare_data():
     TRAIN_ANNOTATIONS = os.getenv("TRAIN_ANNOTATIONS_PATH")
-    TEST_ANNOTATIONS = os.getenv("TEST_ANNOTATIONS_PATH")
     TRAIN_IMAGES = os.getenv("TRAIN_IMAGES_PATH")
-    TEST_IMAGES = os.getenv("TEST_IMAGES_PATH")
     DETECTOR_MODEL_PATH = "best_model.pth"  # Путь к обученной модели детектора
 
     process_annotations(
@@ -106,13 +103,5 @@ def prepare_data():
         TRAIN_IMAGES,
         "train_cropped",
         "train_classification.csv",
-        DETECTOR_MODEL_PATH
-    )
-
-    process_annotations(
-        TEST_ANNOTATIONS,
-        TEST_IMAGES,
-        "test_cropped",
-        "test_classification.csv",
         DETECTOR_MODEL_PATH
     )
