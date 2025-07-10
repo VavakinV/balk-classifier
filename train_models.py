@@ -19,7 +19,7 @@ TEST_ANNOTATIONS_PATH = os.getenv("TEST_ANNOTATIONS_PATH")
 TRAIN_IMAGES_PATH = os.getenv("TRAIN_IMAGES_PATH")
 TEST_IMAGES_PATH = os.getenv("TEST_IMAGES_PATH")
 
-def train_all_models(choice=0):
+def train_models(choice=0):
     # Обучение моделей
     # Обученные модели сохраняются в файлах
     if choice == 1 or choice == 3:
