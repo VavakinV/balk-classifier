@@ -15,7 +15,7 @@ TRAIN_ANNOTATIONS_PATH = os.getenv("TRAIN_ANNOTATIONS_PATH")
 
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 BATCH_SIZE = 32
-EPOCHS = 50
+EPOCHS = 20
 LR = 0.001
 
 def train_model(train_loader, val_loader, model_name, visualize=False):
