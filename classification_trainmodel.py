@@ -17,7 +17,6 @@ DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 BATCH_SIZE = 32
 EPOCHS = 50
 LR = 0.001
-THRESHOLD = 0.8
 
 def train_model(train_loader, val_loader, model_name, visualize=False):
     model = ProducerClassifier(num_classes=5).to(DEVICE)
