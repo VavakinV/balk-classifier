@@ -28,6 +28,8 @@ def train_model(train_loader, val_loader, model_name, visualize=False):
     best_val_loss = float('inf')
     history = {'train_loss': [], 'val_loss': [], 'train_acc': [], 'val_acc': []}    
 
+    model_path = f"{model_name}.pth"
+
     for epoch in range(EPOCHS):
         model.train()
         running_loss = 0.0
@@ -81,13 +83,8 @@ def train_model(train_loader, val_loader, model_name, visualize=False):
         
         if val_loss < best_val_loss:
             best_val_loss = val_loss
-            torch.save(model.state_dict(), "best_model.pth")
+            torch.save(model.state_dict(), model_path)
             print("Model saved!")
-    
-    # Сохранение модели
-    model_path = f"{model_name}.pth"
-    torch.save(model.state_dict(), model_path)
-    print(f"Model saved to {model_path}")
     
     if visualize:
         plt.figure(figsize=(12, 5))
