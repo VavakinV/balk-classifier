@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 from torchvision import models
-
+from torchvision.models import efficientnet_b0, EfficientNet_B0_Weights
 
 class SpatialAttention(nn.Module):
     def __init__(self, kernel_size=7):
@@ -24,47 +24,29 @@ class SpatialAttention(nn.Module):
         att_map = self.conv(combined)
         return x * self.sigmoid(att_map)
 
-
 class BBoxModel(nn.Module):
     def __init__(self):
         super(BBoxModel, self).__init__()
-        resnet = models.resnet34(pretrained=True)
+        backbone = efficientnet_b0(weights=EfficientNet_B0_Weights.DEFAULT)
+        self.features = backbone.features
+        self.att = SpatialAttention(kernel_size=7)
 
-        self.backbone = nn.Sequential(
-            resnet.conv1,
-            resnet.bn1,
-            resnet.relu,
-            resnet.maxpool,
-            resnet.layer1,
-            resnet.layer2,
-            resnet.layer3
-        )
-
-        self.att1 = SpatialAttention(kernel_size=5)
-        self.att2 = SpatialAttention(kernel_size=7)
-
-        self.fuse = nn.Sequential(
-            nn.Conv2d(256, 128, kernel_size=3, padding=1),
+        self.pool = nn.AdaptiveAvgPool2d(1)
+        self.regressor = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(backbone.classifier[1].in_features, 256),
             nn.ReLU(),
-            nn.Conv2d(128, 64, kernel_size=3, padding=1),
-            nn.ReLU()
-        )
-
-        self.head = nn.Sequential(
-            nn.Conv2d(64, 4, kernel_size=1),
+            nn.Dropout(0.3),
+            nn.Linear(256, 4),
             nn.Sigmoid()
         )
 
     def forward(self, x):
-        x = self.backbone(x)
-        x = self.att1(x)
-        x = self.att2(x)
-        x = self.fuse(x) 
-
-        out = self.head(x)
-        out = out.mean(dim=[2, 3])
-        return out
-
+        x = self.features(x)
+        x = self.att(x)
+        x = self.pool(x)
+        x = self.regressor(x)
+        return x
 
 class CenterIoULoss(nn.Module):
     def __init__(self, iou_weight=0.5, eps=1e-6):
@@ -92,16 +74,19 @@ class CenterIoULoss(nn.Module):
         pred_area = (pred_x2 - pred_x1) * (pred_y2 - pred_y1)
         target_area = (target_x2 - target_x1) * (target_y2 - target_y1)
         union = pred_area + target_area - intersection + self.eps
-
         iou = intersection / union
         iou_loss = 1.0 - iou
 
-        pred_cx = (pred_x1 + pred_x2) / 2
-        pred_cy = (pred_y1 + pred_y2) / 2
-        target_cx = (target_x1 + target_x2) / 2
-        target_cy = (target_y1 + target_y2) / 2
+        pred_center_x = (pred_x1 + pred_x2) / 2
+        pred_center_y = (pred_y1 + pred_y2) / 2
+        target_center_x = (target_x1 + target_x2) / 2
+        target_center_y = (target_y1 + target_y2) / 2
 
-        center_distance = torch.sqrt((pred_cx - target_cx) ** 2 + (pred_cy - target_cy) ** 2)
+        center_distance = torch.sqrt(
+            (pred_center_x - target_center_x) ** 2 +
+            (pred_center_y - target_center_y) ** 2
+        )
         normalized_distance = center_distance / torch.sqrt(torch.tensor(2.0, device=pred.device))
 
-        return (self.iou_weight * iou_loss + self.center_weight * normalized_distance).mean()
+        combined_loss = self.iou_weight * iou_loss + self.center_weight * normalized_distance
+        return combined_loss.mean()
