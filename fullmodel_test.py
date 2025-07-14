@@ -31,7 +31,7 @@ def evaluate_pipeline(test_data):
         detector_path=DETECTOR_MODEL_PATH,
         classifier_cropped_path=CLASSIFIER_CROPPED_PATH,
         classifier_full_path=CLASSIFIER_FULL_PATH,
-        threshold=1.1,
+        threshold=0,
         device=DEVICE
     )
 
