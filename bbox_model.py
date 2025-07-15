@@ -38,12 +38,10 @@ class BBoxModel(nn.Module):
         self.layer3 = resnet.layer3
         self.layer4 = resnet.layer4
         
-        # Блоки внимания
         self.att1 = SpatialAttention(kernel_size=5)
         self.att2 = SpatialAttention(kernel_size=9)
         self.att3 = SpatialAttention(kernel_size=7)
         
-        # Адаптивный пулинг
         self.adaptive_pool = nn.AdaptiveAvgPool2d((4, 4))
 
         self.regressor = nn.Sequential(
@@ -89,36 +87,28 @@ class CenterIoULoss(nn.Module):
         Формат bbox: [x_min, y_min, x_max, y_max]
         Координаты нормализованы в диапазоне [0, 1]
         """
-        # Гарантируем, что координаты валидны
         pred = torch.clamp(pred, 0, 1)
         target = torch.clamp(target, 0, 1)
         
-        # Разделяем координаты
         pred_x1, pred_y1, pred_x2, pred_y2 = pred[:, 0], pred[:, 1], pred[:, 2], pred[:, 3]
         target_x1, target_y1, target_x2, target_y2 = target[:, 0], target[:, 1], target[:, 2], target[:, 3]
-        
-        # Вычисляем координаты пересечения
+
         inter_x1 = torch.max(pred_x1, target_x1)
         inter_y1 = torch.max(pred_y1, target_y1)
         inter_x2 = torch.min(pred_x2, target_x2)
         inter_y2 = torch.min(pred_y2, target_y2)
-        
-        # Площадь пересечения (с защитой от отрицательных значений)
+
         inter_width = torch.clamp(inter_x2 - inter_x1, min=0)
         inter_height = torch.clamp(inter_y2 - inter_y1, min=0)
         intersection = inter_width * inter_height
         
-        # Площади прямоугольников
         pred_area = (pred_x2 - pred_x1) * (pred_y2 - pred_y1)
         target_area = (target_x2 - target_x1) * (target_y2 - target_y1)
-        
-        # Площадь объединения
+
         union = pred_area + target_area - intersection + self.eps
-        
-        # IoU
+
         iou = intersection / union
-        
-        # IoU Loss = 1 - IoU
+
         iou_loss = 1.0 - iou
         
         pred_center_x = (pred_x1 + pred_x2) / 2
@@ -126,7 +116,6 @@ class CenterIoULoss(nn.Module):
         target_center_x = (target_x1 + target_x2) / 2
         target_center_y = (target_y1 + target_y2) / 2
         
-        # Евклидово расстояние (нормализованное)
         center_distance = torch.sqrt(
             (pred_center_x - target_center_x)**2 + 
             (pred_center_y - target_center_y)**2
