@@ -15,7 +15,7 @@ TRAIN_ANNOTATIONS_PATH = os.getenv("TRAIN_ANNOTATIONS_PATH")
 
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 BATCH_SIZE = 32
-EPOCHS = 20
+EPOCHS = 30
 LR = 0.001
 
 rotation90 = transforms.RandomRotation((90, 90))
@@ -118,9 +118,8 @@ def train_model(train_loader, val_loader, model_name, visualize=False):
 def train_model_cropped():
     """Возвращает обученную модель классификатора для обрезанных первой моделью кодов производителя"""
     train_transform_cropped = transforms.Compose([
-        fixed_rotations,  
         transforms.Resize((320, 320)),
-        transforms.RandomRotation(15),
+        transforms.RandomRotation(180),
         transforms.RandomHorizontalFlip(),
         transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
         transforms.ToTensor(),
@@ -145,9 +144,8 @@ def train_model_cropped():
 def train_model_full():
     """Возвращает обученную модель классификатора для полных изображений"""
     train_transform_full = transforms.Compose([
-        fixed_rotations,  
         transforms.Resize((320, 320)),
-        transforms.RandomRotation(15),
+        transforms.RandomRotation(180),
         transforms.RandomHorizontalFlip(),
         transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
         transforms.ToTensor(),
