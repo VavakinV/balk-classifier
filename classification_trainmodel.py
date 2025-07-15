@@ -105,7 +105,6 @@ def train_model(train_loader, val_loader, model_name, visualize=False):
 
 def train_model_cropped():
     """Возвращает обученную модель классификатора для обрезанных первой моделью кодов производителя"""
-    # Трансформации для обрезанных изображений
     train_transform_cropped = transforms.Compose([
         transforms.Resize((320, 320)),
         transforms.RandomRotation(15),
@@ -116,7 +115,6 @@ def train_model_cropped():
                             std=[0.229, 0.224, 0.225])
     ])
 
-    # Загрузка данных для обрезанных изображений
     cropped_train_dataset = ProducerDataset("train_classification.csv", train_transform_cropped)
 
     cropped_train_size = int(0.8 * len(cropped_train_dataset))
@@ -133,7 +131,6 @@ def train_model_cropped():
 
 def train_model_full():
     """Возвращает обученную модель классификатора для полных изображений"""
-    # Трансформации для полных изображений
     train_transform_full = transforms.Compose([
         transforms.Resize((320, 320)),
         transforms.RandomRotation(15),
@@ -144,7 +141,6 @@ def train_model_full():
                             std=[0.229, 0.224, 0.225])
     ])
 
-    # Загрузка данных для полных изображений
     full_train_dataset = FullImageProducerDataset(TRAIN_ANNOTATIONS_PATH, train_transform_full)
 
     full_train_size = int(0.8 * len(full_train_dataset))

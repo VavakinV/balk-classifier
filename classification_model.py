@@ -1,4 +1,3 @@
-import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torchvision import models
@@ -12,8 +11,6 @@ class ProducerClassifier(nn.Module):
             param.requires_grad = False
 
         for param in self.base_model.features[5:].parameters():
-            param.requires_grad = True
-        for param in self.base_model.features[7:].parameters():
             param.requires_grad = True
 
         in_features = self.base_model.classifier[1].in_features
