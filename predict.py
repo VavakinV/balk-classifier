@@ -12,15 +12,18 @@ class FullPipeline:
         self.threshold = threshold
 
         self.detector = BBoxModel().to(self.device)
-        self.detector.load_state_dict(torch.load(detector_path))
+        state = torch.load(detector_path, map_location=self.device)
+        self.detector.load_state_dict(state)
         self.detector.eval()
 
         self.classifier_cropped = ProducerClassifier(num_classes=5).to(self.device)
-        self.classifier_cropped.load_state_dict(torch.load(classifier_cropped_path))
+        state = torch.load(classifier_cropped_path, map_location=self.device)
+        self.classifier_cropped.load_state_dict(state)
         self.classifier_cropped.eval()
         
         self.classifier_full = ProducerClassifier(num_classes=5).to(self.device)
-        self.classifier_full.load_state_dict(torch.load(classifier_full_path))
+        state = torch.load(classifier_full_path, map_location=self.device)
+        self.classifier_full.load_state_dict(state)
         self.classifier_full.eval()
 
         self.detection_transform = transforms.Compose([
