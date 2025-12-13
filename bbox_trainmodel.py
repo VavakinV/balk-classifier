@@ -33,7 +33,6 @@ def train_model():
         project=PROJECT,
         name=NAME,
 
-        # важные параметры для мелких объектов (коды)
         close_mosaic=10,
         patience=20,
         optimizer="AdamW",
@@ -63,5 +62,5 @@ def validate_model():
 
 
 if __name__ == "__main__":
-    train_model()
+    # train_model()
     validate_model()

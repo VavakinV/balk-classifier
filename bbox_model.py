@@ -3,7 +3,11 @@ import torch
 
 class BBoxModel:
     """
-    YOLOv10-based replacement for legacy ResNet BBoxModel
+    YOLOv10-based bbox detector with guaranteed output.
+
+    - Returns exactly ONE bbox
+    - If 'code' class detected -> highest confidence bbox
+    - If not detected -> full-image bbox
     """
 
     def __init__(
@@ -23,8 +27,8 @@ class BBoxModel:
     @torch.no_grad()
     def forward(self, image):
         """
-        image: np.ndarray (HWC, BGR or RGB)
-        return: List[bbox] in normalized xyxy format
+        image: np.ndarray (H, W, C)
+        return: [x1, y1, x2, y2] normalized to [0, 1]
         """
 
         results = self.model.predict(
@@ -35,7 +39,9 @@ class BBoxModel:
             verbose=False
         )
 
-        boxes = []
+        best_box = None
+        best_conf = -1.0
+
         for r in results:
             if r.boxes is None:
                 continue
@@ -45,7 +51,13 @@ class BBoxModel:
                 if cls != self.code_class_id:
                     continue
 
-                x1, y1, x2, y2 = box.xyxyn[0].tolist()
-                boxes.append([x1, y1, x2, y2])
+                conf = float(box.conf.item())
+                if conf > best_conf:
+                    x1, y1, x2, y2 = box.xyxyn[0].tolist()
+                    best_box = [x1, y1, x2, y2]
+                    best_conf = conf
 
-        return boxes
+        if best_box is None:
+            return [0.0, 0.0, 1.0, 1.0]
+
+        return best_box
