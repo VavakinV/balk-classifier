@@ -4,6 +4,7 @@ import random
 import matplotlib.pyplot as plt
 import torch
 from torchvision.ops import box_iou
+from bbox_model import BBoxModel
 
 
 def visualize_test_predictions(
@@ -81,3 +82,85 @@ def visualize_test_predictions(
         except Exception as e:
             print(f"Error processing {sample['img_path']}: {e}")
 
+if __name__ == "__main__":
+    import csv
+    import json
+    from dotenv import load_dotenv
+
+    load_dotenv()
+
+    TEST_IMAGES_PATH = os.getenv("TEST_IMAGES_PATH")
+    TEST_ANNOTATIONS_PATH = os.getenv("TEST_ANNOTATIONS_PATH")
+
+    BBOX_MODEL_WEIGHTS = os.getenv("DETECTOR_MODEL_PATH")
+    DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+    NUM_SAMPLES = 20
+
+    test_data = []
+
+    with open(TEST_ANNOTATIONS_PATH, "r", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+
+        for row in reader:
+            image_name = os.path.basename(row["image"])
+            image_path = os.path.join(TEST_IMAGES_PATH, image_name)
+
+            if not os.path.exists(image_path):
+                continue
+
+            if not row["code_bbox"]:
+                continue
+
+            try:
+                # code_bbox хранится как JSON-строка
+                bbox_data = json.loads(row["code_bbox"])
+            except Exception:
+                continue
+
+            # Ожидаем хотя бы один bbox
+            if not isinstance(bbox_data, list) or len(bbox_data) == 0:
+                continue
+
+            bbox_item = bbox_data[0]
+
+            # Нормализованные координаты (Label Studio)
+            x = float(bbox_item["x"]) / 100.0
+            y = float(bbox_item["y"]) / 100.0
+            w = float(bbox_item["width"]) / 100.0
+            h = float(bbox_item["height"]) / 100.0
+
+            img = cv2.imread(image_path)
+            if img is None:
+                continue
+
+            img_h, img_w = img.shape[:2]
+
+            x_min = x * img_w
+            y_min = y * img_h
+            x_max = (x + w) * img_w
+            y_max = (y + h) * img_h
+
+            test_data.append({
+                "img_path": image_path,
+                "bbox": [x_min, y_min, x_max, y_max]
+            })
+
+    print(f"Loaded {len(test_data)} test samples")
+
+    if len(test_data) == 0:
+        raise RuntimeError("No valid test samples found")
+
+    model = BBoxModel(
+        weights=BBOX_MODEL_WEIGHTS,
+        device=DEVICE,
+        conf=0.1,
+        iou=0.5,
+        code_class_id=2
+    )
+
+    visualize_test_predictions(
+        model=model,
+        test_data=test_data,
+        n=NUM_SAMPLES
+    )

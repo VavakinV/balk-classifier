@@ -14,7 +14,7 @@ class BBoxModel:
         self,
         weights: str,
         device: str = "cuda",
-        conf: float = 0.25,
+        conf: float = 0.1,
         iou: float = 0.5,
         code_class_id: int = 2
     ):

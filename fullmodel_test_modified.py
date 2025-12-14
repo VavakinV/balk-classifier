@@ -7,7 +7,7 @@ from collections import Counter
 
 load_dotenv()
 
-DETECTOR_MODEL_PATH = "best_model.pth"
+DETECTOR_MODEL_PATH = os.getenv("DETECTOR_MODEL_PATH")
 CLASSIFIER_CROPPED_PATH = "producer_classifier.pth"
 CLASSIFIER_FULL_PATH = "producer_classifier_full.pth"
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
